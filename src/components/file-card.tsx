@@ -1,6 +1,6 @@
 "use client";
 
-import type { NormalizedRow, ParsedFile, SemanticField } from "@/lib/excel/parser";
+import type { NormalizedRow, ParsedFile, SemanticField, UuidMode } from "@/lib/excel/parser";
 import { SEMANTIC_FIELDS, getHeaders } from "@/lib/excel/parser";
 
 interface FileCardProps {
@@ -9,6 +9,8 @@ interface FileCardProps {
   onSheetChange: (sheetName: string) => void;
   onHeaderRowChange: (rowIndex: number) => void;
   onMappingChange: (header: string, field: SemanticField) => void;
+  onVisibleChange: (header: string, visible: boolean) => void;
+  onUuidModeChange: (mode: UuidMode) => void;
   onRemove: () => void;
 }
 
@@ -18,15 +20,17 @@ export default function FileCard({
   onSheetChange,
   onHeaderRowChange,
   onMappingChange,
+  onVisibleChange,
+  onUuidModeChange,
   onRemove,
 }: FileCardProps) {
   const sheet = file.sheets.find((s) => s.name === file.sheetName);
   const headers = sheet ? getHeaders(sheet.rows, file.headerRow) : [];
   const hasUuid = Object.values(file.mapping).includes("UUID");
   const ready = hasUuid && rows.length > 0;
-  const extraCols = headers
-    .filter((h) => file.mapping[h] !== "NINGUNO" && file.mapping[h] !== "UUID")
-    .slice(0, 4);
+  const previewCols = headers
+    .filter((h) => file.visible[h] && file.mapping[h] !== "UUID")
+    .slice(0, 6);
   const headerOptions = Math.min(15, sheet ? sheet.rows.length : 15);
 
   return (
@@ -65,7 +69,7 @@ export default function FileCard({
       </div>
 
       <div className="p-5 space-y-5">
-        <div className="grid sm:grid-cols-2 gap-4">
+        <div className="grid sm:grid-cols-3 gap-4">
           <label className="block">
             <span className="text-[12px] font-semibold text-gray-600">Hoja del libro</span>
             <select
@@ -81,9 +85,7 @@ export default function FileCard({
             </select>
           </label>
           <label className="block">
-            <span className="text-[12px] font-semibold text-gray-600">
-              Fila de encabezados (detectada automáticamente, ajustable)
-            </span>
+            <span className="text-[12px] font-semibold text-gray-600">Fila de encabezados</span>
             <select
               value={file.headerRow}
               onChange={(e) => onHeaderRowChange(Number(e.target.value))}
@@ -94,11 +96,29 @@ export default function FileCard({
               ))}
             </select>
           </label>
+          <label className="block">
+            <span className="text-[12px] font-semibold text-gray-600">Modo de extracción de UUID</span>
+            <select
+              value={file.uuidMode}
+              onChange={(e) => onUuidModeChange(e.target.value as UuidMode)}
+              className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+            >
+              <option value="EXACTO">Celda completa = UUID</option>
+              <option value="TEXTO">Buscar UUID dentro del texto</option>
+            </select>
+          </label>
         </div>
+
+        {file.uuidMode === "TEXTO" ? (
+          <p className="text-[12px] text-blue-800 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+            Se buscará el patrón 8-4-4-4-12 dentro de cada celda (ej. "Concepto del Movimiento").
+            El texto completo se conserva como un campo más del diccionario; las filas sin UUID detectado se descartan del cruce.
+          </p>
+        ) : null}
 
         <div>
           <p className="text-[11px] font-bold tracking-wide text-gray-500 uppercase">
-            Diccionario de datos · ¿qué significa cada columna?
+            Diccionario de datos · significado y visibilidad de cada columna
           </p>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
             {headers.map((header) => (
@@ -122,12 +142,21 @@ export default function FileCard({
                     <option key={f} value={f}>{f}</option>
                   ))}
                 </select>
+                <label className="mt-2 flex items-center gap-2 text-[11px] font-semibold text-gray-600 select-none cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={file.visible[header] ?? false}
+                    onChange={(e) => onVisibleChange(header, e.target.checked)}
+                    className="accent-blue-700 w-3.5 h-3.5"
+                  />
+                  Ver en tabla del dashboard
+                </label>
               </div>
             ))}
           </div>
           {!hasUuid ? (
             <p className="mt-2 text-[12px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-              Marca con "UUID" la columna que contiene el folio fiscal (por ejemplo "Concepto del Movimiento") para activar este archivo.
+              Marca con "UUID" la columna que contiene el folio fiscal (o la frase que lo contiene, si el modo es "dentro del texto") para activar este archivo.
             </p>
           ) : null}
         </div>
@@ -146,7 +175,7 @@ export default function FileCard({
                   <tr>
                     <th className="px-3 py-2 text-left font-semibold text-gray-500">Fila</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-500">UUID</th>
-                    {extraCols.map((c) => (
+                    {previewCols.map((c) => (
                       <th key={c} className="px-3 py-2 text-left font-semibold text-gray-500">{c}</th>
                     ))}
                   </tr>
@@ -156,7 +185,7 @@ export default function FileCard({
                     <tr key={r.sourceRow + "-" + r.uuid} className="border-t border-gray-100">
                       <td className="px-3 py-2 text-gray-400">{r.sourceRow}</td>
                       <td className="px-3 py-2 font-mono text-gray-800">{r.uuid}</td>
-                      {extraCols.map((c) => (
+                      {previewCols.map((c) => (
                         <td key={c} className="px-3 py-2 text-gray-600 max-w-[220px] truncate">
                           {r.values[c] === null ? "" : String(r.values[c])}
                         </td>
@@ -168,7 +197,7 @@ export default function FileCard({
             </div>
           ) : (
             <p className="mt-2 text-[12px] text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
-              Aún no hay filas con UUID. Revisa la fila de encabezados o el mapeo de columnas.
+              Aún no hay filas con UUID. Revisa la fila de encabezados, el mapeo de columnas o el modo de extracción.
             </p>
           )}
         </div>

@@ -21,6 +21,8 @@ export const SEMANTIC_FIELDS: SemanticField[] = [
 
 export type FileRole = "PRINCIPAL" | "COMPLEMENTARIO";
 
+export type UuidMode = "EXACTO" | "TEXTO";
+
 export type CellValue = string | number | boolean | null;
 
 export interface SheetData {
@@ -42,6 +44,17 @@ export interface ParsedFile {
   sheetName: string;
   headerRow: number; // índice 0-based dentro de rows
   mapping: Record<string, SemanticField>; // encabezado -> significado
+  visible: Record<string, boolean>; // encabezado -> ver en tabla del dashboard
+  uuidMode: UuidMode; // EXACTO = celda completa, TEXTO = buscar dentro de la frase
+}
+
+const UUID_REGEX =
+  /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
+
+// Extrae el primer UUID (patrón 8-4-4-4-12) encontrado dentro de cualquier texto
+export function extractUuid(text: string): string {
+  const match = text.match(UUID_REGEX);
+  return match ? match[0].toUpperCase() : "";
 }
 
 export function cellText(cell: CellValue): string {
@@ -80,7 +93,7 @@ export function detectHeaderRow(rows: CellValue[][], maxScan = 15): number {
         score += 2;
         if (HEADER_KEYWORDS.test(cell)) score += 3;
       } else {
-        score -= 1; // los números suelen ser datos, no encabezados
+        score -= 1;
       }
     }
     if (score > bestScore) {
@@ -132,6 +145,17 @@ export function buildAutoMapping(headers: string[]): Record<string, SemanticFiel
   return mapping;
 }
 
+export function buildAutoVisible(
+  headers: string[],
+  mapping: Record<string, SemanticField>
+): Record<string, boolean> {
+  const visible: Record<string, boolean> = {};
+  for (const header of headers) {
+    visible[header] = mapping[header] !== "NINGUNO";
+  }
+  return visible;
+}
+
 export function toNumber(cell: CellValue): number | null {
   if (typeof cell === "number") return cell;
   const text = cellText(cell).replace(/[$,\s]/g, "");
@@ -151,8 +175,10 @@ export function normalizeRows(file: ParsedFile): NormalizedRow[] {
   for (let i = file.headerRow + 1; i < sheet.rows.length; i++) {
     const row = sheet.rows[i] || [];
     if (!row.some((c) => cellText(c) !== "")) continue; // fila en blanco
-    const uuid = cellText(row[uuidIndex]).toUpperCase();
-    if (uuid === "") continue; // fila sin UUID no sirve para el cruce
+    const rawText = cellText(row[uuidIndex]);
+    const uuid =
+      file.uuidMode === "TEXTO" ? extractUuid(rawText) : rawText.toUpperCase();
+    if (uuid === "") continue; // sin UUID no sirve para el cruce
     const values: Record<string, string | number | null> = {};
     headers.forEach((header, index) => {
       const field = file.mapping[header];

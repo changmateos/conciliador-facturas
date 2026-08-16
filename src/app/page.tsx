@@ -5,9 +5,10 @@ import { createClient } from "@/lib/supabase/client";
 import LogoutButton from "@/components/logout-button";
 import Dropzone from "@/components/dropzone";
 import FileCard from "@/components/file-card";
-import type { FileRole, NormalizedRow, ParsedFile, SemanticField } from "@/lib/excel/parser";
+import type { FileRole, NormalizedRow, ParsedFile, SemanticField, UuidMode } from "@/lib/excel/parser";
 import {
   buildAutoMapping,
+  buildAutoVisible,
   detectHeaderRow,
   getHeaders,
   normalizeRows,
@@ -55,6 +56,7 @@ export default function DashboardPage() {
         }
         const headerRow = detectHeaderRow(bestSheet.rows);
         const headers = getHeaders(bestSheet.rows, headerRow);
+        const mapping = buildAutoMapping(headers);
         added.push({
           id:
             file.name + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7),
@@ -63,7 +65,9 @@ export default function DashboardPage() {
           sheets,
           sheetName: bestSheet.name,
           headerRow,
-          mapping: buildAutoMapping(headers),
+          mapping,
+          visible: buildAutoVisible(headers, mapping),
+          uuidMode: /mayor/i.test(file.name) ? "TEXTO" : "EXACTO",
         });
       } catch {
         window.alert("No se pudo leer el archivo: " + file.name);
@@ -86,12 +90,9 @@ export default function DashboardPage() {
       const sheet = f.sheets.find((s) => s.name === sheetName);
       if (!sheet) return f;
       const headerRow = detectHeaderRow(sheet.rows);
-      return {
-        ...f,
-        sheetName,
-        headerRow,
-        mapping: buildAutoMapping(getHeaders(sheet.rows, headerRow)),
-      };
+      const headers = getHeaders(sheet.rows, headerRow);
+      const mapping = buildAutoMapping(headers);
+      return { ...f, sheetName, headerRow, mapping, visible: buildAutoVisible(headers, mapping) };
     });
   }
 
@@ -99,7 +100,9 @@ export default function DashboardPage() {
     updateFile(id, (f) => {
       const sheet = f.sheets.find((s) => s.name === f.sheetName);
       if (!sheet) return f;
-      return { ...f, headerRow, mapping: buildAutoMapping(getHeaders(sheet.rows, headerRow)) };
+      const headers = getHeaders(sheet.rows, headerRow);
+      const mapping = buildAutoMapping(headers);
+      return { ...f, headerRow, mapping, visible: buildAutoVisible(headers, mapping) };
     });
   }
 
@@ -112,8 +115,18 @@ export default function DashboardPage() {
         }
       }
       mapping[header] = field;
-      return { ...f, mapping };
+      const visible = { ...f.visible };
+      if (field !== "NINGUNO") visible[header] = true;
+      return { ...f, mapping, visible };
     });
+  }
+
+  function handleVisibleChange(id: string, header: string, visible: boolean) {
+    updateFile(id, (f) => ({ ...f, visible: { ...f.visible, [header]: visible } }));
+  }
+
+  function handleUuidModeChange(id: string, mode: UuidMode) {
+    updateFile(id, (f) => ({ ...f, uuidMode: mode }));
   }
 
   function removeFile(id: string) {
@@ -128,7 +141,7 @@ export default function DashboardPage() {
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
           <div>
             <h1 className="font-bold text-gray-900">Conciliador de Facturas</h1>
-            <p className="text-[11px] text-gray-500">Fase 2 · Carga y diccionario de datos</p>
+            <p className="text-[11px] text-gray-500">Fase 2 · Carga y diccionario de datos (ajustado)</p>
           </div>
           <div className="flex items-center gap-4">
             <span className="text-sm text-gray-600 hidden sm:inline">{email}</span>
@@ -187,6 +200,8 @@ export default function DashboardPage() {
                 onSheetChange={(s) => handleSheetChange(principal.id, s)}
                 onHeaderRowChange={(r) => handleHeaderRowChange(principal.id, r)}
                 onMappingChange={(h, field) => handleMappingChange(principal.id, h, field)}
+                onVisibleChange={(h, v) => handleVisibleChange(principal.id, h, v)}
+                onUuidModeChange={(m) => handleUuidModeChange(principal.id, m)}
                 onRemove={() => removeFile(principal.id)}
               />
             ) : null}
@@ -198,6 +213,8 @@ export default function DashboardPage() {
                 onSheetChange={(s) => handleSheetChange(f.id, s)}
                 onHeaderRowChange={(r) => handleHeaderRowChange(f.id, r)}
                 onMappingChange={(h, field) => handleMappingChange(f.id, h, field)}
+                onVisibleChange={(h, v) => handleVisibleChange(f.id, h, v)}
+                onUuidModeChange={(m) => handleUuidModeChange(f.id, m)}
                 onRemove={() => removeFile(f.id)}
               />
             ))}
@@ -209,21 +226,48 @@ export default function DashboardPage() {
         )}
 
         {files.length > 0 ? (
-          <div className="bg-white border border-gray-200 rounded-xl p-6">
-            <h2 className="text-sm font-bold text-gray-900">Diccionario de datos del mes</h2>
-            <ul className="mt-3 space-y-1.5 text-[13px] font-mono text-gray-700">
-              {files.map((f) => {
-                const col = uuidColumnOf(f);
-                return (
-                  <li key={f.id}>
-                    {f.fileName} · hoja "{f.sheetName}" ·{" "}
-                    {col ? "[" + col + "] = UUID" : "sin UUID asignado"}
-                  </li>
-                );
-              })}
-            </ul>
+          <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
+            <div>
+              <h2 className="text-sm font-bold text-gray-900">Diccionario de datos del mes</h2>
+              <p className="text-[12px] text-gray-500 mt-0.5">
+                Todos estos campos se guardarán en historical_invoices.datos_json al consolidar el mes (Fase 5).
+              </p>
+            </div>
+            {files.map((f) => {
+              const sheet = f.sheets.find((s) => s.name === f.sheetName);
+              const headers = sheet ? getHeaders(sheet.rows, f.headerRow) : [];
+              const col = uuidColumnOf(f);
+              return (
+                <div key={f.id} className="border border-gray-200 rounded-lg p-4">
+                  <p className="text-[12px] font-bold text-gray-800 font-mono truncate">
+                    {f.fileName}
+                    <span className="text-gray-400 font-normal">
+                      {" "}· hoja "{f.sheetName}" · {f.uuidMode === "TEXTO" ? "UUID dentro de texto" : "UUID exacto"}
+                    </span>
+                  </p>
+                  <ul className="mt-2 grid sm:grid-cols-2 gap-x-6 gap-y-1 text-[12px] font-mono text-gray-600">
+                    {headers.map((h) => (
+                      <li key={h} className="flex items-center gap-2 min-w-0">
+                        {f.visible[h] ? (
+                          <span className="text-[9px] font-bold bg-gray-200 text-gray-600 rounded px-1 shrink-0">TABLA</span>
+                        ) : (
+                          <span className="text-[9px] font-bold bg-gray-50 text-gray-300 rounded px-1 shrink-0">—</span>
+                        )}
+                        <span className="truncate">[{h}]</span>
+                        <span className={f.mapping[h] !== "NINGUNO" ? "text-blue-700 font-semibold shrink-0" : "text-gray-400 shrink-0"}>
+                          → {f.mapping[h] !== "NINGUNO" ? f.mapping[h] : "sin asignar"}
+                        </span>
+                        {h === col ? (
+                          <span className="text-green-700 font-semibold shrink-0">· llave de cruce</span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
             {principal && principalUuidCol ? (
-              <div className="mt-4">
+              <div>
                 <h3 className="text-[11px] font-bold tracking-wide text-gray-500 uppercase">
                   Equivalencias de cruce
                 </h3>
