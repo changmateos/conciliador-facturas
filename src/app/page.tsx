@@ -5,28 +5,32 @@ import { createClient } from "@/lib/supabase/client";
 import LogoutButton from "@/components/logout-button";
 import Dropzone from "@/components/dropzone";
 import FileCard from "@/components/file-card";
+import ResultsTable from "@/components/results-table";
 import type { FileRole, NormalizedRow, ParsedFile, SemanticField, UuidMode } from "@/lib/excel/parser";
-import {
-  buildAutoMapping,
-  buildAutoVisible,
-  detectHeaderRow,
-  getHeaders,
-  normalizeRows,
-  readWorkbook,
-  uuidColumnOf,
-} from "@/lib/excel/parser";
+import { getHeaders, normalizeRows, readWorkbook, uuidColumnOf } from "@/lib/excel/parser";
+import { buildFileDraft, rememberFile } from "@/lib/excel/memory";
+import type { ResultRow } from "@/lib/conciliacion";
+import { buildComplementIndex, fetchHistoricalUuids, reconcile } from "@/lib/conciliacion";
 
 export default function DashboardPage() {
   const supabase = useMemo(() => createClient(), []);
   const [email, setEmail] = useState("");
   const [files, setFiles] = useState<ParsedFile[]>([]);
   const [reading, setReading] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState("");
+  const [results, setResults] = useState<ResultRow[] | null>(null);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       setEmail(data.user?.email ?? "");
     });
   }, [supabase]);
+
+  // Memoria del diccionario: cualquier cambio queda recordado por nombre de archivo
+  useEffect(() => {
+    for (const f of files) rememberFile(f.fileName, f);
+  }, [files]);
 
   const rowsById = useMemo(() => {
     const map: Record<string, NormalizedRow[]> = {};
@@ -41,6 +45,30 @@ export default function DashboardPage() {
   ).length;
   const principalRows = principal ? (rowsById[principal.id] ?? []).length : 0;
   const compRows = complementarios.reduce((acc, f) => acc + (rowsById[f.id] ?? []).length, 0);
+  const principalReady = principal !== null && principalRows > 0;
+
+  const principalVisibleCols = useMemo(() => {
+    if (!principal) return [] as string[];
+    const sheet = principal.sheets.find((s) => s.name === principal.sheetName);
+    if (!sheet) return [] as string[];
+    return getHeaders(sheet.rows, principal.headerRow).filter(
+      (h) => principal.visible[h] && principal.mapping[h] !== "UUID"
+    );
+  }, [principal]);
+
+  const stats = useMemo(() => {
+    if (!results) return null;
+    const encontradas = results.filter((r) => r.status !== "NO_ENCONTRADA").length;
+    const senaladas = results.filter(
+      (r) => r.aparicionesPrincipal > 1 || r.extraLocations.length > 0
+    ).length;
+    return {
+      evaluadas: results.length,
+      encontradas,
+      faltantes: results.length - encontradas,
+      senaladas,
+    };
+  }, [results]);
 
   async function addFiles(list: File[], role: FileRole) {
     setReading(true);
@@ -50,25 +78,9 @@ export default function DashboardPage() {
         const buffer = await file.arrayBuffer();
         const sheets = readWorkbook(buffer);
         if (sheets.length === 0) continue;
-        let bestSheet = sheets[0];
-        for (const s of sheets) {
-          if (s.rows.length > bestSheet.rows.length) bestSheet = s;
-        }
-        const headerRow = detectHeaderRow(bestSheet.rows);
-        const headers = getHeaders(bestSheet.rows, headerRow);
-        const mapping = buildAutoMapping(headers);
-        added.push({
-          id:
-            file.name + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7),
-          fileName: file.name,
-          role,
-          sheets,
-          sheetName: bestSheet.name,
-          headerRow,
-          mapping,
-          visible: buildAutoVisible(headers, mapping),
-          uuidMode: /mayor/i.test(file.name) ? "TEXTO" : "EXACTO",
-        });
+        added.push(
+          buildFileDraft(file.name, role, sheets, /mayor/i.test(file.name) ? "TEXTO" : "EXACTO")
+        );
       } catch {
         window.alert("No se pudo leer el archivo: " + file.name);
       }
@@ -78,21 +90,22 @@ export default function DashboardPage() {
         ? [...prev.filter((f) => f.role !== "PRINCIPAL"), ...added]
         : [...prev, ...added]
     );
+    setResults(null);
     setReading(false);
   }
 
   function updateFile(id: string, updater: (f: ParsedFile) => ParsedFile) {
     setFiles((prev) => prev.map((f) => (f.id === id ? updater(f) : f)));
+    setResults(null);
   }
 
   function handleSheetChange(id: string, sheetName: string) {
     updateFile(id, (f) => {
       const sheet = f.sheets.find((s) => s.name === sheetName);
       if (!sheet) return f;
-      const headerRow = detectHeaderRow(sheet.rows);
+      const headerRow = detectHeaderRowLocal(sheet.rows);
       const headers = getHeaders(sheet.rows, headerRow);
-      const mapping = buildAutoMapping(headers);
-      return { ...f, sheetName, headerRow, mapping, visible: buildAutoVisible(headers, mapping) };
+      return { ...f, sheetName, headerRow, ...rebuildMappingLocal(headers) };
     });
   }
 
@@ -101,8 +114,7 @@ export default function DashboardPage() {
       const sheet = f.sheets.find((s) => s.name === f.sheetName);
       if (!sheet) return f;
       const headers = getHeaders(sheet.rows, headerRow);
-      const mapping = buildAutoMapping(headers);
-      return { ...f, headerRow, mapping, visible: buildAutoVisible(headers, mapping) };
+      return { ...f, headerRow, ...rebuildMappingLocal(headers) };
     });
   }
 
@@ -131,6 +143,27 @@ export default function DashboardPage() {
 
   function removeFile(id: string) {
     setFiles((prev) => prev.filter((f) => f.id !== id));
+    setResults(null);
+  }
+
+  async function runConciliacion() {
+    if (!principal) return;
+    setRunning(true);
+    setRunError("");
+    setResults(null);
+    try {
+      const principalRowsList = rowsById[principal.id] ?? [];
+      const uniqueUuids = Array.from(new Set(principalRowsList.map((r) => r.uuid)));
+      const historical = await fetchHistoricalUuids(supabase, uniqueUuids);
+      const compIndex = buildComplementIndex(
+        complementarios.map((f) => ({ file: f, rows: rowsById[f.id] ?? [] }))
+      );
+      setResults(reconcile(principalRowsList, historical, compIndex));
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : "Error inesperado al conciliar");
+    } finally {
+      setRunning(false);
+    }
   }
 
   const principalUuidCol = principal ? uuidColumnOf(principal) : null;
@@ -141,7 +174,7 @@ export default function DashboardPage() {
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
           <div>
             <h1 className="font-bold text-gray-900">Conciliador de Facturas</h1>
-            <p className="text-[11px] text-gray-500">Fase 2 · Carga y diccionario de datos (ajustado)</p>
+            <p className="text-[11px] text-gray-500">Fase 3 · Motor de conciliación</p>
           </div>
           <div className="flex items-center gap-4">
             <span className="text-sm text-gray-600 hidden sm:inline">{email}</span>
@@ -186,9 +219,7 @@ export default function DashboardPage() {
         </div>
 
         {reading ? (
-          <p className="text-sm text-gray-600 bg-white border border-gray-200 rounded-xl px-4 py-3">
-            Leyendo archivos…
-          </p>
+          <p className="text-sm text-gray-600 bg-white border border-gray-200 rounded-xl px-4 py-3">Leyendo archivos…</p>
         ) : null}
 
         {files.length > 0 ? (
@@ -268,9 +299,7 @@ export default function DashboardPage() {
             })}
             {principal && principalUuidCol ? (
               <div>
-                <h3 className="text-[11px] font-bold tracking-wide text-gray-500 uppercase">
-                  Equivalencias de cruce
-                </h3>
+                <h3 className="text-[11px] font-bold tracking-wide text-gray-500 uppercase">Equivalencias de cruce</h3>
                 <ul className="mt-2 space-y-1.5 text-[13px] font-mono">
                   {complementarios.map((c) => {
                     const col = uuidColumnOf(c);
@@ -286,25 +315,80 @@ export default function DashboardPage() {
           </div>
         ) : null}
 
-        <div className="flex flex-wrap items-center justify-between gap-4 bg-white border border-gray-200 rounded-xl p-6">
-          <div>
-            <h2 className="text-sm font-bold text-gray-900">Ejecutar Conciliación</h2>
-            <p className="text-[12px] text-gray-500 mt-0.5">
-              Se habilita en la Fase 3: cruce de UUID contra el histórico de Supabase y los complementarios.
-            </p>
+        <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-bold text-gray-900">Ejecutar Conciliación</h2>
+              <p className="text-[12px] text-gray-500 mt-0.5">
+                Orden de búsqueda: 1) histórico de Supabase · 2) archivos complementarios.
+              </p>
+            </div>
+            <button
+              onClick={runConciliacion}
+              disabled={!principalReady || reading || running}
+              className={
+                "rounded-lg text-sm font-semibold px-5 py-2.5 transition-colors " +
+                (principalReady && !running
+                  ? "bg-blue-700 text-white hover:bg-blue-800"
+                  : "bg-gray-200 text-gray-500 cursor-not-allowed")
+              }
+            >
+              {running ? "Conciliando…" : "Ejecutar Conciliación"}
+            </button>
           </div>
-          <button
-            disabled
-            className="rounded-lg bg-gray-200 text-gray-500 text-sm font-semibold px-5 py-2.5 cursor-not-allowed"
-          >
-            Ejecutar Conciliación · Fase 3
-          </button>
+
+          {!principalReady ? (
+            <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              Para conciliar necesitas un archivo principal LISTO (con su columna UUID marcada).
+            </p>
+          ) : null}
+
+          {runError ? (
+            <p className="text-[12px] text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{runError}</p>
+          ) : null}
+
+          {stats ? (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="rounded-xl border border-gray-200 p-4">
+                <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Evaluadas</p>
+                <p className="text-2xl font-bold text-gray-900 mt-1">{stats.evaluadas}</p>
+              </div>
+              <div className="rounded-xl border border-green-200 bg-green-50 p-4">
+                <p className="text-[11px] font-bold text-green-700 uppercase tracking-wide">Encontradas</p>
+                <p className="text-2xl font-bold text-green-700 mt-1">{stats.encontradas}</p>
+              </div>
+              <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+                <p className="text-[11px] font-bold text-red-700 uppercase tracking-wide">No encontradas</p>
+                <p className="text-2xl font-bold text-red-700 mt-1">{stats.faltantes}</p>
+              </div>
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <p className="text-[11px] font-bold text-amber-700 uppercase tracking-wide">Señaladas</p>
+                <p className="text-2xl font-bold text-amber-700 mt-1">{stats.senaladas}</p>
+              </div>
+            </div>
+          ) : null}
+
+          {results ? (
+            <ResultsTable results={results} visibleCols={principalVisibleCols} />
+          ) : null}
         </div>
 
         <p className="text-[12px] text-gray-500">
-          Nota: en esta fase todo el procesamiento ocurre en tu navegador; todavía no se escribe nada en Supabase.
+          Nota: el histórico de Supabase aún está vacío; las coincidencias de hoy provienen de tus complementarios. En la Fase 5, "Consolidar Mes" alimentará el histórico.
         </p>
       </div>
     </main>
   );
+}
+
+// --- utilerías locales de remapeo al cambiar hoja o fila de encabezados ---
+import { buildAutoMapping, buildAutoVisible, detectHeaderRow } from "@/lib/excel/parser";
+
+function detectHeaderRowLocal(rows: Parameters<typeof detectHeaderRow>[0]) {
+  return detectHeaderRow(rows);
+}
+
+function rebuildMappingLocal(headers: string[]) {
+  const mapping = buildAutoMapping(headers);
+  return { mapping, visible: buildAutoVisible(headers, mapping) };
 }
