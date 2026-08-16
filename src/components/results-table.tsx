@@ -13,9 +13,9 @@ interface SegmentOption {
 interface ResultsTableProps {
   results: ResultRow[];
   visibleCols: string[];
-  segmentMap: Record<string, string[]>; // etiquetas por fila (uuid|fila)
-  groupKeysMap: Record<string, string[]>; // claves de grupo por fila
-  segmentOptions: SegmentOption[]; // grupos disponibles para filtrar
+  segmentMap: Record<string, string[]>;
+  groupKeysMap: Record<string, string[]>;
+  segmentOptions: SegmentOption[];
 }
 
 type Filter = "TODAS" | "HISTORICO" | "COMPLEMENTARIO" | "NO_ENCONTRADA" | "SENALADAS";
@@ -24,6 +24,26 @@ const PAGE = 200;
 
 function segKey(r: ResultRow): string {
   return r.uuid + "|" + r.sourceRow;
+}
+
+function applyStatus(list: ResultRow[], filter: Filter): ResultRow[] {
+  if (filter === "HISTORICO") return list.filter((r) => r.status === "HISTORICO");
+  if (filter === "COMPLEMENTARIO") return list.filter((r) => r.status === "COMPLEMENTARIO");
+  if (filter === "NO_ENCONTRADA") return list.filter((r) => r.status === "NO_ENCONTRADA");
+  if (filter === "SENALADAS")
+    return list.filter((r) => r.aparicionesPrincipal > 1 || r.extraLocations.length > 0);
+  return list;
+}
+
+function applySegment(
+  list: ResultRow[],
+  segment: string,
+  groupKeysMap: Record<string, string[]>
+): ResultRow[] {
+  if (segment === "TODOS") return list;
+  if (segment === "SIN_REGLA")
+    return list.filter((r) => (groupKeysMap[segKey(r)] ?? []).length === 0);
+  return list.filter((r) => (groupKeysMap[segKey(r)] ?? []).includes(segment));
 }
 
 export default function ResultsTable({
@@ -38,41 +58,51 @@ export default function ResultsTable({
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(PAGE);
 
+  // Filtros cruzados: cada facet muestra conteos dentro del otro facet activo
+  const byQuery = useMemo(() => {
+    const q = query.trim().toUpperCase();
+    if (q === "") return results;
+    return results.filter((r) => r.uuid.includes(q));
+  }, [results, query]);
+
+  const tabList = useMemo(
+    () => applySegment(byQuery, segment, groupKeysMap),
+    [byQuery, segment, groupKeysMap]
+  );
+
   const counts = useMemo(
     () => ({
-      TODAS: results.length,
-      HISTORICO: results.filter((r) => r.status === "HISTORICO").length,
-      COMPLEMENTARIO: results.filter((r) => r.status === "COMPLEMENTARIO").length,
-      NO_ENCONTRADA: results.filter((r) => r.status === "NO_ENCONTRADA").length,
-      SENALADAS: results.filter(
+      TODAS: tabList.length,
+      HISTORICO: tabList.filter((r) => r.status === "HISTORICO").length,
+      COMPLEMENTARIO: tabList.filter((r) => r.status === "COMPLEMENTARIO").length,
+      NO_ENCONTRADA: tabList.filter((r) => r.status === "NO_ENCONTRADA").length,
+      SENALADAS: tabList.filter(
         (r) => r.aparicionesPrincipal > 1 || r.extraLocations.length > 0
       ).length,
     }),
-    [results]
+    [tabList]
   );
 
-  const filtered = useMemo(() => {
-    let list = results;
-    if (filter === "HISTORICO") list = list.filter((r) => r.status === "HISTORICO");
-    else if (filter === "COMPLEMENTARIO")
-      list = list.filter((r) => r.status === "COMPLEMENTARIO");
-    else if (filter === "NO_ENCONTRADA")
-      list = list.filter((r) => r.status === "NO_ENCONTRADA");
-    else if (filter === "SENALADAS")
-      list = list.filter(
-        (r) => r.aparicionesPrincipal > 1 || r.extraLocations.length > 0
-      );
-    if (segment !== "TODOS") {
-      if (segment === "SIN_REGLA") {
-        list = list.filter((r) => (groupKeysMap[segKey(r)] ?? []).length === 0);
-      } else {
-        list = list.filter((r) => (groupKeysMap[segKey(r)] ?? []).includes(segment));
-      }
+  const segList = useMemo(() => applyStatus(byQuery, filter), [byQuery, filter]);
+
+  const segOptionsDynamic = useMemo(() => {
+    const opts: SegmentOption[] = [
+      { key: "TODOS", label: "Todos los segmentos", count: segList.length },
+    ];
+    for (const o of segmentOptions) {
+      opts.push({
+        key: o.key,
+        label: o.label,
+        count: applySegment(segList, o.key, groupKeysMap).length,
+      });
     }
-    const q = query.trim().toUpperCase();
-    if (q !== "") list = list.filter((r) => r.uuid.includes(q));
-    return list;
-  }, [results, filter, segment, query, groupKeysMap]);
+    return opts;
+  }, [segList, segmentOptions, groupKeysMap]);
+
+  const filtered = useMemo(
+    () => applyStatus(tabList, filter),
+    [tabList, filter]
+  );
 
   const shown = filtered.slice(0, limit);
 
@@ -136,11 +166,10 @@ export default function ResultsTable({
           <select
             value={segment}
             onChange={(e) => { setSegment(e.target.value); setLimit(PAGE); }}
-            className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[12px] font-semibold text-gray-900 max-w-[260px]"
-            title="Filtrar por grupo de regla"
+            className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[12px] font-semibold text-gray-900 max-w-[280px]"
+            title="Filtrar por grupo de regla (los conteos respetan la pestaña activa)"
           >
-            <option value="TODOS">Todos los segmentos · {results.length}</option>
-            {segmentOptions.map((o) => (
+            {segOptionsDynamic.map((o) => (
               <option key={o.key} value={o.key}>
                 {o.label} · {o.count}
               </option>

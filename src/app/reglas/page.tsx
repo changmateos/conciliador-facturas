@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import LogoutButton from "@/components/logout-button";
 import { loadAllMemory } from "@/lib/excel/memory";
@@ -131,6 +132,7 @@ function RuleCard({ rule, dictFields, onSave, onDelete }: RuleCardProps) {
 
 export default function ReglasPage() {
   const supabase = useMemo(() => createClient(), []);
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [uma, setUma] = useState("117.31");
   const [umaSaved, setUmaSaved] = useState(false);
@@ -164,6 +166,17 @@ export default function ReglasPage() {
   async function load() {
     const { data: sess } = await supabase.auth.getUser();
     setEmail(sess.user?.email ?? "");
+    if (sess.user) {
+      const { data: prof } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", sess.user.id)
+        .maybeSingle();
+      if (prof && (prof as { role: string }).role === "COLABORADOR_CONTADOR") {
+        router.replace("/mis-batches");
+        return;
+      }
+    }
     const { data: s } = await supabase.from("settings").select("uma_valor").eq("id", 1).maybeSingle();
     if (s) setUma(String((s as { uma_valor: number }).uma_valor));
     const { data: r } = await supabase

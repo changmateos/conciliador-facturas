@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import LogoutButton from "@/components/logout-button";
 import Dropzone from "@/components/dropzone";
 import FileCard from "@/components/file-card";
 import ResultsTable from "@/components/results-table";
+import InvoiceModal from "@/components/invoice-modal";
+import type { LocalInvoiceInfo } from "@/components/invoice-modal";
 import type { FileRole, NormalizedRow, ParsedFile, SemanticField, UuidMode } from "@/lib/excel/parser";
 import { buildAutoMapping, buildAutoVisible, detectHeaderRow, getHeaders, normalizeRows, readWorkbook, uuidColumnOf } from "@/lib/excel/parser";
 import { buildFileDraft, rememberFile } from "@/lib/excel/memory";
@@ -14,6 +17,8 @@ import type { ResultRow } from "@/lib/conciliacion";
 import { buildComplementIndex, fetchHistoricalUuids, reconcile } from "@/lib/conciliacion";
 import type { RuleRow } from "@/lib/reglas";
 import { classifyRows, ruleDescription } from "@/lib/reglas";
+import type { BatchRow } from "@/lib/batches";
+import { BATCH_STATUS_LABEL, ITEM_STATUSES, addEvent, fetchBatches } from "@/lib/batches";
 
 interface Colab {
   id: string;
@@ -26,10 +31,20 @@ function preFromHeaders(headers: string[], mapping: Record<string, SemanticField
   return pre;
 }
 
+function batchBadge(status: string) {
+  if (status === "COMPLETADO")
+    return <span className="text-[10px] font-bold rounded-full px-2.5 py-1 bg-green-100 text-green-700">COMPLETADO</span>;
+  if (status === "EN_PROCESO")
+    return <span className="text-[10px] font-bold rounded-full px-2.5 py-1 bg-blue-100 text-blue-700">EN PROCESO</span>;
+  return <span className="text-[10px] font-bold rounded-full px-2.5 py-1 bg-amber-100 text-amber-700">PENDIENTE</span>;
+}
+
 export default function DashboardPage() {
   const supabase = useMemo(() => createClient(), []);
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [userId, setUserId] = useState("");
+  const [role, setRole] = useState("");
   const [files, setFiles] = useState<ParsedFile[]>([]);
   const [preById, setPreById] = useState<Record<string, Record<string, boolean>>>({});
   const [reading, setReading] = useState(false);
@@ -38,6 +53,8 @@ export default function DashboardPage() {
   const [results, setResults] = useState<ResultRow[] | null>(null);
   const [showCols, setShowCols] = useState(false);
   const [showDict, setShowDict] = useState(false);
+  const [showSeg, setShowSeg] = useState(false);
+  const [modalUuid, setModalUuid] = useState<string | null>(null);
 
   const [uma, setUma] = useState(117.31);
   const [rules, setRules] = useState<RuleRow[]>([]);
@@ -46,11 +63,34 @@ export default function DashboardPage() {
   const [batchedBy, setBatchedBy] = useState<Record<string, string>>({});
   const [assigning, setAssigning] = useState("");
 
+  const [batchesAdmin, setBatchesAdmin] = useState<BatchRow[] | null>(null);
+  const [showLogAdmin, setShowLogAdmin] = useState<Record<string, boolean>>({});
+  const [consolidating, setConsolidating] = useState(false);
+  const [consolidateMsg, setConsolidateMsg] = useState("");
+
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
+    supabase.auth.getUser().then(async ({ data }) => {
       setEmail(data.user?.email ?? "");
       setUserId(data.user?.id ?? "");
+      if (data.user) {
+        const { data: prof } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", data.user.id)
+          .maybeSingle();
+        const r = prof ? (prof as { role: string }).role : "";
+        setRole(r);
+        if (r === "COLABORADOR_CONTADOR") router.replace("/mis-batches");
+      }
     });
+  }, [supabase, router]);
+
+  const refreshBatches = useCallback(async () => {
+    try {
+      setBatchesAdmin(await fetchBatches(supabase, null));
+    } catch {
+      setBatchesAdmin([]);
+    }
   }, [supabase]);
 
   useEffect(() => {
@@ -70,8 +110,9 @@ export default function DashboardPage() {
             .map((x) => ({ id: x.id, email: x.email }))
         );
       }
+      await refreshBatches();
     })();
-  }, [supabase]);
+  }, [supabase, refreshBatches]);
 
   useEffect(() => {
     for (const f of files) rememberFile(f.fileName, f);
@@ -85,6 +126,26 @@ export default function DashboardPage() {
 
   const principal = files.find((f) => f.role === "PRINCIPAL") ?? null;
   const complementarios = files.filter((f) => f.role === "COMPLEMENTARIO");
+
+  const localByUuid = useMemo(() => {
+    const map: Record<string, LocalInvoiceInfo> = {};
+    const pr = files.find((f) => f.role === "PRINCIPAL") ?? null;
+    const comps = files.filter((f) => f.role === "COMPLEMENTARIO");
+    const ordered = pr !== null ? [pr, ...comps] : comps;
+    for (const f of ordered) {
+      for (const r of rowsById[f.id] ?? []) {
+        if (!map[r.uuid]) {
+          map[r.uuid] = {
+            fileName: f.fileName,
+            sheetName: f.sheetName,
+            sourceRow: r.sourceRow,
+            values: r.values,
+          };
+        }
+      }
+    }
+    return map;
+  }, [files, rowsById]);
   const readyCount = files.filter(
     (f) => (rowsById[f.id] ?? []).length > 0 && Object.values(f.mapping).includes("UUID")
   ).length;
@@ -129,6 +190,10 @@ export default function DashboardPage() {
   const retCol = useMemo(() => {
     if (!principal) return null;
     return Object.keys(principal.mapping).find((h) => principal.mapping[h] === "RETENCIONES") ?? null;
+  }, [principal]);
+  const folioCol = useMemo(() => {
+    if (!principal) return null;
+    return Object.keys(principal.mapping).find((h) => principal.mapping[h] === "FOLIO") ?? null;
   }, [principal]);
 
   const groups = useMemo(() => {
@@ -315,31 +380,138 @@ export default function DashboardPage() {
       return;
     }
     setAssigning(groupKey);
-    const { data: batch, error } = await supabase
-      .from("batches")
-      .insert({ titulo, assigned_to: colabId, created_by: userId, status: "PENDIENTE" })
-      .select()
-      .single();
-    if (error || !batch) {
-      window.alert(error ? error.message : "No se pudo crear el batch");
+    try {
+      const { data: batch, error } = await supabase
+        .from("batches")
+        .insert({ titulo, assigned_to: colabId, created_by: userId, status: "PENDIENTE" })
+        .select()
+        .single();
+      if (error || !batch) {
+        window.alert(error ? error.message : "No se pudo crear el batch");
+        return;
+      }
+      const batchId = (batch as { id: string }).id;
+      const items = rows.map((r) => ({ batch_id: batchId, uuid_fiscal: r.uuid }));
+      const { error: errItems } = await supabase.from("batch_items").insert(items);
+      if (errItems) {
+        window.alert(errItems.message);
+        return;
+      }
+      await addEvent(supabase, batchId, null, email, "ASIGNACION", "PENDIENTE", "Batch creado y asignado desde el panel");
+      const colab = colabs.find((c) => c.id === colabId);
+      setBatchedBy((prev) => {
+        const next = { ...prev };
+        next[groupKey] = colab ? colab.email : "colaborador";
+        return next;
+      });
+      await refreshBatches();
+    } finally {
       setAssigning("");
-      return;
     }
-    const batchId = (batch as { id: string }).id;
-    const items = rows.map((r) => ({ batch_id: batchId, uuid_fiscal: r.uuid }));
-    const { error: errItems } = await supabase.from("batch_items").insert(items);
-    if (errItems) {
-      window.alert(errItems.message);
-      setAssigning("");
-      return;
+  }
+
+  async function consolidarMes() {
+    if (!principal || !results) return;
+    setConsolidating(true);
+    setConsolidateMsg("");
+    try {
+      const principalRowsList = rowsById[principal.id] ?? [];
+      const uniqueUuids = Array.from(new Set(principalRowsList.map((r) => r.uuid)));
+      const historical = await fetchHistoricalUuids(supabase, uniqueUuids);
+      const compIndex = buildComplementIndex(
+        complementarios.map((f) => ({ file: f, rows: rowsById[f.id] ?? [] }))
+      );
+
+      const notFound = uniqueUuids.filter((u) => !historical.has(u) && !compIndex.has(u));
+      const subidaSet = new Set<string>();
+      if (notFound.length > 0) {
+        const { data: items } = await supabase
+          .from("batch_items")
+          .select("uuid_fiscal")
+          .in("uuid_fiscal", notFound)
+          .eq("status", "SUBIDA_SISTEMA");
+        for (const it of items ?? []) subidaSet.add((it as { uuid_fiscal: string }).uuid_fiscal);
+      }
+
+      const now = new Date();
+      const seen = new Set<string>();
+      const toInsert: Record<string, unknown>[] = [];
+      let alreadyHistorical = 0;
+      let leftPending = 0;
+      for (const r of principalRowsList) {
+        if (seen.has(r.uuid)) continue;
+        seen.add(r.uuid);
+        if (historical.has(r.uuid)) {
+          alreadyHistorical += 1;
+          continue;
+        }
+        const inComp = compIndex.has(r.uuid);
+        const subida = subidaSet.has(r.uuid);
+        if (!inComp && !subida) {
+          leftPending += 1;
+          continue;
+        }
+        toInsert.push({
+          uuid_fiscal: r.uuid,
+          folio: folioCol !== null && typeof r.values[folioCol] === "string" ? (r.values[folioCol] as string) : null,
+          monto: montoCol !== null && typeof r.values[montoCol] === "number" ? (r.values[montoCol] as number) : null,
+          retenciones: retCol !== null && typeof r.values[retCol] === "number" ? (r.values[retCol] as number) : null,
+          mes_periodo: now.getMonth() + 1,
+          anio_periodo: now.getFullYear(),
+          origen_archivo: principal.fileName,
+          datos_json: {
+            ...r.values,
+            __origen: principal.fileName,
+            __hoja: principal.sheetName,
+            __fila: r.sourceRow,
+            __via: inComp ? "COMPLEMENTARIO" : "SUBIDA_SISTEMA",
+          },
+        });
+      }
+
+      if (toInsert.length > 0) {
+        const { error: insErr } = await supabase
+          .from("historical_invoices")
+          .upsert(toInsert, { onConflict: "uuid_fiscal", ignoreDuplicates: true });
+        if (insErr) {
+          window.alert("Error al consolidar: " + insErr.message);
+          return;
+        }
+      }
+
+      const consolidatedSet = new Set(toInsert.map((t) => String(t.uuid_fiscal)));
+      if (consolidatedSet.size > 0) {
+        const { data: allItems } = await supabase.from("batch_items").select("batch_id, uuid_fiscal");
+        const perBatch = new Map<string, number>();
+        for (const it of (allItems ?? []) as { batch_id: string; uuid_fiscal: string }[]) {
+          if (consolidatedSet.has(it.uuid_fiscal)) {
+            perBatch.set(it.batch_id, (perBatch.get(it.batch_id) ?? 0) + 1);
+          }
+        }
+        for (const [bid, count] of perBatch) {
+          await addEvent(
+            supabase,
+            bid,
+            null,
+            email,
+            "CONSOLIDACION",
+            null,
+            "Consolidar Mes: " + count + " factura(s) de este batch pasaron al histórico"
+          );
+        }
+      }
+
+      await refreshBatches();
+      setConsolidateMsg(
+        "Consolidadas " + toInsert.length + " facturas con todos sus campos. " +
+        "Ya estaban en histórico: " + alreadyHistorical + " (omitidas). " +
+        "Quedan pendientes para el siguiente mes: " + leftPending + "."
+      );
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Error al consolidar");
+    } finally {
+      setConsolidating(false);
     }
-    const colab = colabs.find((c) => c.id === colabId);
-    setBatchedBy((prev) => {
-      const next = { ...prev };
-      next[groupKey] = colab ? colab.email : "colaborador";
-      return next;
-    });
-    setAssigning("");
   }
 
   const principalUuidCol = principal ? uuidColumnOf(principal) : null;
@@ -350,15 +522,16 @@ export default function DashboardPage() {
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
           <div>
             <h1 className="font-bold text-gray-900">Conciliador de Facturas</h1>
-            <p className="text-[11px] text-gray-500">Fase 4 · Panel de conciliación y batches</p>
+            <p className="text-[11px] text-gray-500">Panel del Contador Principal</p>
           </div>
           <div className="flex items-center gap-3">
-            <nav className="flex items-center gap-1 text-[12px] font-semibold">
-              <span className="rounded-lg bg-blue-50 text-blue-700 px-3 py-1.5">Panel</span>
-              <Link href="/reglas" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">
-                Reglas y UMA
-              </Link>
-            </nav>
+            {role !== "COLABORADOR_CONTADOR" ? (
+              <nav className="flex items-center gap-1 text-[12px] font-semibold">
+                <span className="rounded-lg bg-blue-50 text-blue-700 px-3 py-1.5">Panel</span>
+                <Link href="/reglas" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Reglas y UMA</Link>
+                <Link href="/mis-batches" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Mis Batches</Link>
+              </nav>
+            ) : null}
             <span className="text-sm text-gray-600 hidden sm:inline">{email}</span>
             <LogoutButton />
           </div>
@@ -447,7 +620,7 @@ export default function DashboardPage() {
               <span className="text-left">
                 <span className="block text-sm font-bold text-gray-900">Diccionario de datos del mes</span>
                 <span className="block text-[12px] text-gray-500 mt-0.5">
-                  Todos estos campos se guardarán en historical_invoices.datos_json al consolidar el mes (Fase 5).
+                  Todos estos campos se guardarán en historical_invoices.datos_json al consolidar el mes.
                 </span>
               </span>
               <span className="text-[11px] font-semibold text-gray-500 shrink-0">
@@ -612,7 +785,7 @@ export default function DashboardPage() {
             <div>
               <h2 className="text-sm font-bold text-gray-900">Clasificación por reglas y asignación de batches</h2>
               <p className="text-[12px] text-gray-500 mt-0.5">
-                UMA actual: {"$"}{uma.toFixed(2)} · Cada regla segmenta su propio grupo; una factura puede aparecer en varios grupos y en la columna “Segmentación” del reporte. Gestiona reglas, UMA, palabras prohibidas y campos personalizados en “Reglas y UMA”.
+                UMA actual: {"$"}{uma.toFixed(2)} · Cada regla segmenta su propio grupo; una factura puede aparecer en varios grupos y en la columna “Segmentación” del reporte.
               </p>
             </div>
             {groups.map((g) => (
@@ -674,10 +847,133 @@ export default function DashboardPage() {
           </div>
         ) : null}
 
-        <p className="text-[12px] text-gray-500">
-          Nota: el histórico de Supabase se alimentará con “Consolidar Mes” en la Fase 5.
-        </p>
+        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          <button
+            onClick={() => setShowSeg(!showSeg)}
+            className="w-full flex items-center justify-between px-6 py-4 bg-white hover:bg-gray-50 transition-colors"
+          >
+            <span className="text-left">
+              <span className="text-sm font-bold text-gray-900">Seguimiento de batches</span>
+              <span className="block text-[12px] text-gray-500 mt-0.5">
+                Estatus, contadores por factura y bitácora de todos los batches asignados.
+              </span>
+            </span>
+            <span className="text-[11px] font-semibold text-gray-500 shrink-0">
+              {showSeg ? "Colapsar ▲" : "Expandir ▼"}
+            </span>
+          </button>
+          {showSeg ? (
+            <div className="px-6 pb-6 space-y-4 border-t border-gray-100">
+              {(batchesAdmin ?? []).length === 0 ? (
+                <p className="text-[13px] text-gray-500">Aún no hay batches creados.</p>
+              ) : (
+                (batchesAdmin ?? []).map((b) => {
+                  const counts: Record<string, number> = {};
+                  for (const it of b.items) counts[it.status] = (counts[it.status] ?? 0) + 1;
+                  return (
+                    <div key={b.id} className="border border-gray-200 rounded-lg p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-[13px] font-bold text-gray-900">{b.titulo}</p>
+                        <div className="flex items-center gap-2">
+                          {batchBadge(b.status)}
+                          <button
+                            onClick={() => setShowLogAdmin((p) => ({ ...p, [b.id]: !p[b.id] }))}
+                            className="text-[11px] font-semibold text-gray-600 border border-gray-300 rounded-lg px-2.5 py-1 hover:bg-gray-100"
+                          >
+                            {showLogAdmin[b.id] ? "Ocultar bitácora ▲" : "Bitácora ▼"}
+                          </button>
+                        </div>
+                      </div>
+                      <p className="text-[12px] text-gray-500 mt-1">
+                        Asignado a <strong>{b.assigned_email}</strong> · {new Date(b.created_at).toLocaleString()}
+                      </p>
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        {ITEM_STATUSES.map((s) => (
+                          <span key={s.value} className="text-[11px] font-semibold bg-gray-100 text-gray-600 rounded-full px-2.5 py-1">
+                            {s.label}: {counts[s.value] ?? 0}
+                          </span>
+                        ))}
+                        <span className="text-[11px] font-semibold bg-gray-100 text-gray-600 rounded-full px-2.5 py-1">
+                          Total: {b.items.length}
+                        </span>
+                      </div>
+                      {b.nota_final ? (
+                        <p className="text-[12px] text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2 mt-2">
+                          <strong>Nota de finalización:</strong> {b.nota_final}
+                        </p>
+                      ) : null}
+                      {showLogAdmin[b.id] ? (
+                        <ul className="mt-3 space-y-1.5 text-[12px] text-gray-600 border-t border-gray-100 pt-3">
+                          {b.events.map((e) => {
+                            const itemUuid = e.item_id
+                              ? b.items.find((i) => i.id === e.item_id)?.uuid_fiscal ?? null
+                              : null;
+                            return (
+                              <li key={e.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                                <span className="text-gray-400 shrink-0">{new Date(e.created_at).toLocaleString()}</span>
+                                <span className="font-semibold text-gray-800 shrink-0">[{e.tipo}]</span>
+                                {e.status_nuevo ? <span className="text-blue-700 font-semibold shrink-0">→ {e.status_nuevo}</span> : null}
+                                {itemUuid ? (
+                                  <button
+                                    onClick={() => setModalUuid(itemUuid)}
+                                    className="font-mono text-blue-700 hover:underline shrink-0"
+                                  >
+                                    {itemUuid}
+                                  </button>
+                                ) : null}
+                                <span className="text-gray-500 shrink-0">{e.actor_email}</span>
+                                {e.detalle ? <span>· {e.detalle}</span> : null}
+                              </li>
+                            );
+                          })}
+                          {b.events.length === 0 ? <li className="text-gray-400">Sin eventos.</li> : null}
+                        </ul>
+                      ) : null}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-3">
+          <h2 className="text-sm font-bold text-gray-900">Cierre mensual</h2>
+          <p className="text-[12px] text-gray-600 leading-relaxed">
+            <strong>Consolidar Mes</strong> envía al histórico (<span className="font-mono text-[11px]">historical_invoices</span>, con todos sus campos en datos_json) únicamente:
+            (1) las facturas encontradas en archivos complementarios este mes, y
+            (2) las no encontradas que el colaborador marcó como <strong>“Subida al sistema”</strong>.
+            Las que ya estaban en el histórico se omiten y las pendientes se quedan para el siguiente mes.
+            El cierre nunca duplica: primera aparición por UUID + candado de unicidad. A cada batch tocado se le escribe un evento de CONSOLIDACIÓN en su bitácora.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={consolidarMes}
+              disabled={!results || consolidating}
+              className={
+                "rounded-lg text-sm font-semibold px-5 py-2.5 transition-colors " +
+                (results && !consolidating
+                  ? "bg-green-600 text-white hover:bg-green-700"
+                  : "bg-gray-200 text-gray-500 cursor-not-allowed")
+              }
+            >
+              {consolidating ? "Consolidando…" : "Consolidar Mes"}
+            </button>
+            {!results ? (
+              <span className="text-[12px] text-gray-500">Primero ejecuta la conciliación del mes.</span>
+            ) : null}
+          </div>
+          {consolidateMsg ? (
+            <p className="text-[12px] text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">{consolidateMsg}</p>
+          ) : null}
+        </div>
       </div>
+
+      <InvoiceModal
+        uuid={modalUuid}
+        localInfo={modalUuid ? localByUuid[modalUuid] ?? null : null}
+        onClose={() => setModalUuid(null)}
+      />
     </main>
   );
 }
