@@ -82,7 +82,7 @@ export function reconcile(
 
     if (inHistorical) {
       status = "HISTORICO";
-      location = "Base histórica (Supabase)";
+      location = "Encontrada en histórico acumulado";
       extra = compHits.map(
         (h) => h.fileName + " · " + h.sheetName + " · fila " + h.sourceRow
       );

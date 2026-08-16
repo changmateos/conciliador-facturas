@@ -16,6 +16,20 @@ interface InvoiceModalProps {
   onClose: () => void;
 }
 
+const ETIQUETAS_AMABLES: Record<string, string> = {
+  __origen: "Archivo de origen",
+  __hoja: "Hoja",
+  __fila: "Fila dentro del archivo",
+  __via: "Consolidada por",
+};
+
+function valorAmable(key: string, value: unknown): string {
+  if (key === "Consolidada por") {
+    return value === "SUBIDA_SISTEMA" ? "Subida al sistema" : "Archivo del mes";
+  }
+  return value === null || value === undefined ? "" : String(value);
+}
+
 export default function InvoiceModal({ uuid, localInfo, onClose }: InvoiceModalProps) {
   const supabase = useMemo(() => createClient(), []);
   const [histRow, setHistRow] = useState<Record<string, unknown> | null>(null);
@@ -50,7 +64,7 @@ export default function InvoiceModal({ uuid, localInfo, onClose }: InvoiceModalP
       : null;
 
   const entries: [string, unknown][] = datos
-    ? Object.entries(datos)
+    ? Object.entries(datos).map(([k, v]) => [ETIQUETAS_AMABLES[k] ?? k, v] as [string, unknown])
     : localInfo
       ? Object.entries(localInfo.values)
       : [];
@@ -80,14 +94,14 @@ export default function InvoiceModal({ uuid, localInfo, onClose }: InvoiceModalP
 
         <div className="p-5 space-y-3">
           {loading ? (
-            <p className="text-[12px] text-gray-500">Buscando en el histórico…</p>
+            <p className="text-[12px] text-gray-500">Buscando en el histórico acumulado…</p>
           ) : histRow ? (
             <p className="text-[12px] font-semibold text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
-              En histórico · periodo {String(histRow.mes_periodo ?? "")}/{String(histRow.anio_periodo ?? "")} · origen: {String(histRow.origen_archivo ?? "—")}
+              En histórico acumulado · periodo {String(histRow.mes_periodo ?? "")}/{String(histRow.anio_periodo ?? "")} · origen: {String(histRow.origen_archivo ?? "—")}
             </p>
           ) : (
             <p className="text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-              Aún no está en el histórico de Supabase.
+              Aún no forma parte del histórico acumulado.
             </p>
           )}
 
@@ -104,9 +118,7 @@ export default function InvoiceModal({ uuid, localInfo, onClose }: InvoiceModalP
                   {entries.map(([k, v]) => (
                     <tr key={k} className="border-t border-gray-100 first:border-t-0">
                       <td className="px-3 py-1.5 bg-gray-50 font-semibold text-gray-600 w-[45%] align-top">{k}</td>
-                      <td className="px-3 py-1.5 text-gray-800 break-all">
-                        {v === null || v === undefined ? "" : String(v)}
-                      </td>
+                      <td className="px-3 py-1.5 text-gray-800 break-all">{valorAmable(k, v)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -114,7 +126,7 @@ export default function InvoiceModal({ uuid, localInfo, onClose }: InvoiceModalP
             </div>
           ) : !loading ? (
             <p className="text-[12px] text-gray-500">
-              Sin datos adicionales todavía: no está en el histórico ni en los archivos cargados en esta sesión.
+              Sin datos adicionales todavía: no está en el histórico acumulado ni en los archivos cargados en esta sesión.
             </p>
           ) : null}
         </div>

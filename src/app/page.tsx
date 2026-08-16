@@ -530,6 +530,9 @@ export default function DashboardPage() {
                 <span className="rounded-lg bg-blue-50 text-blue-700 px-3 py-1.5">Panel</span>
                 <Link href="/reglas" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Reglas y UMA</Link>
                 <Link href="/mis-batches" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Mis Batches</Link>
+                {role === "SUPER_USUARIO" ? (
+                  <Link href="/admin" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Mantenimiento</Link>
+                ) : null}
               </nav>
             ) : null}
             <span className="text-sm text-gray-600 hidden sm:inline">{email}</span>
@@ -620,7 +623,7 @@ export default function DashboardPage() {
               <span className="text-left">
                 <span className="block text-sm font-bold text-gray-900">Diccionario de datos del mes</span>
                 <span className="block text-[12px] text-gray-500 mt-0.5">
-                  Todos estos campos se guardarán en historical_invoices.datos_json al consolidar el mes.
+                  Todos estos campos se conservarán en el histórico acumulado al consolidar el mes.
                 </span>
               </span>
               <span className="text-[11px] font-semibold text-gray-500 shrink-0">
@@ -687,7 +690,7 @@ export default function DashboardPage() {
             <div>
               <h2 className="text-sm font-bold text-gray-900">Ejecutar Conciliación</h2>
               <p className="text-[12px] text-gray-500 mt-0.5">
-                Orden de búsqueda: 1) histórico de Supabase · 2) archivos complementarios.
+                Orden de búsqueda: 1) histórico acumulado · 2) archivos del mes.
               </p>
             </div>
             <button
@@ -841,7 +844,7 @@ export default function DashboardPage() {
             ))}
             {colabs.length === 0 ? (
               <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                No hay colaboradores registrados. Créalos en Supabase (Authentication → Users) y dales el rol con el SQL de la guía (profiles → COLABORADOR_CONTADOR).
+                 No hay colaboradores registrados. Créalos en la consola de usuarios del sistema y asígnales el rol de colaborador.
               </p>
             ) : null}
           </div>
@@ -940,11 +943,11 @@ export default function DashboardPage() {
         <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-3">
           <h2 className="text-sm font-bold text-gray-900">Cierre mensual</h2>
           <p className="text-[12px] text-gray-600 leading-relaxed">
-            <strong>Consolidar Mes</strong> envía al histórico (<span className="font-mono text-[11px]">historical_invoices</span>, con todos sus campos en datos_json) únicamente:
+            <strong>Consolidar Mes</strong> envía al histórico acumulado (con todos sus campos) únicamente:
             (1) las facturas encontradas en archivos complementarios este mes, y
             (2) las no encontradas que el colaborador marcó como <strong>“Subida al sistema”</strong>.
             Las que ya estaban en el histórico se omiten y las pendientes se quedan para el siguiente mes.
-            El cierre nunca duplica: primera aparición por UUID + candado de unicidad. A cada batch tocado se le escribe un evento de CONSOLIDACIÓN en su bitácora.
+            El cierre nunca duplica: cada UUID se consolida una sola vez. A cada batch tocado se le escribe un evento de CONSOLIDACIÓN en su bitácora.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <button

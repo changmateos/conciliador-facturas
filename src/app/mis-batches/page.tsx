@@ -136,7 +136,7 @@ export default function MisBatchesPage() {
           </div>
           <div className="flex items-center gap-3">
             <nav className="flex items-center gap-1 text-[12px] font-semibold">
-              {role === "ADMIN_CONTADOR" ? (
+              {role === "ADMIN_CONTADOR" || role === "SUPER_USUARIO" ? (
                 <>
                   <Link href="/" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Panel</Link>
                   <Link href="/reglas" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Reglas y UMA</Link>
