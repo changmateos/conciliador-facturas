@@ -132,7 +132,7 @@ export default function MisBatchesPage() {
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
           <div>
             <h1 className="font-bold text-gray-900">Conciliador de Facturas</h1>
-            <p className="text-[11px] text-gray-500">Mis Batches · panel del colaborador</p>
+            <p className="text-[11px] text-gray-500">Mis lotes de trabajo · panel del colaborador</p>
           </div>
           <div className="flex items-center gap-3">
             <nav className="flex items-center gap-1 text-[12px] font-semibold">
@@ -140,7 +140,7 @@ export default function MisBatchesPage() {
                 <>
                   <Link href="/" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Panel</Link>
                   <Link href="/reglas" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Reglas y UMA</Link>
-                  <span className="rounded-lg bg-blue-50 text-blue-700 px-3 py-1.5">Mis Batches</span>
+                  <span className="rounded-lg bg-blue-50 text-blue-700 px-3 py-1.5">Mis lotes</span>
                 </>
               ) : (
                 <span className="rounded-lg bg-blue-50 text-blue-700 px-3 py-1.5">Mis Batches</span>
@@ -161,7 +161,7 @@ export default function MisBatchesPage() {
           <p className="text-sm text-gray-500">Cargando tus batches…</p>
         ) : batches.length === 0 ? (
           <p className="text-sm text-gray-500 bg-white border border-gray-200 rounded-xl px-4 py-6 text-center">
-            No tienes batches asignados todavía. El Contador Principal te los asignará desde el Panel.
+            No tienes lotes de trabajo asignados todavía. El Contador Principal te los asignará desde el Panel.
           </p>
         ) : (
           batches.map((b) => (
@@ -211,7 +211,7 @@ export default function MisBatchesPage() {
                           <td className="px-3 py-2 text-gray-600 max-w-[220px]">{it.nota ?? "—"}</td>
                           <td className="px-3 py-2">
                             {b.status === "COMPLETADO" ? (
-                              <span className="text-gray-400">Batch cerrado</span>
+                              <span className="text-gray-400">Lote cerrado</span>
                             ) : (
                               <div className="flex flex-wrap items-center gap-2">
                                 <select
@@ -258,7 +258,7 @@ export default function MisBatchesPage() {
                         </button>
                       ) : null}
                       <p className="text-[12px] text-gray-600">
-                        Para finalizar, describe las acciones realizadas con este batch (obligatorio):
+                        Para finalizar, describe las acciones realizadas con este lote (obligatorio):
                       </p>
                     </div>
                     <textarea
@@ -273,7 +273,7 @@ export default function MisBatchesPage() {
                       disabled={busy === b.id}
                       className="rounded-lg bg-green-600 text-white text-[12px] font-semibold px-4 py-2 hover:bg-green-700 disabled:opacity-50"
                     >
-                      Finalizar batch
+                      Finalizar lote
                     </button>
                   </div>
                 ) : (
@@ -284,7 +284,7 @@ export default function MisBatchesPage() {
 
                 {showLog[b.id] ? (
                   <div className="border border-gray-200 rounded-lg p-4">
-                    <p className="text-[11px] font-bold tracking-wide text-gray-500 uppercase mb-2">Bitácora del batch</p>
+                    <p className="text-[11px] font-bold tracking-wide text-gray-500 uppercase mb-2">Bitácora del lote</p>
                     <ul className="space-y-2 text-[12px] text-gray-600">
                       {b.events.map((e) => {
                         const itemUuid = e.item_id

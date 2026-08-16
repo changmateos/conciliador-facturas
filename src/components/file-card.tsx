@@ -25,7 +25,7 @@ export default function FileCard({
   onUuidModeChange,
   onRemove,
 }: FileCardProps) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const sheet = file.sheets.find((s) => s.name === file.sheetName);
   const headers = sheet ? getHeaders(sheet.rows, file.headerRow) : [];
   const hasUuid = Object.values(file.mapping).includes("UUID");

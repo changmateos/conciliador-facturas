@@ -136,13 +136,13 @@ export default function AdminPage() {
       const { data: comps } = await supabase.from("batches").select("id").eq("status", "COMPLETADO");
       const ids = (comps ?? []).map((b) => (b as { id: string }).id);
       if (ids.length === 0) {
-        setMsg("No hay batches completados que eliminar.");
+        setMsg("No hay lotes completados que eliminar.");
         return;
       }
       await supabase.from("batch_events").delete().in("batch_id", ids);
       await supabase.from("batch_items").delete().in("batch_id", ids);
       await supabase.from("batches").delete().in("id", ids);
-      setMsg("Batches completados eliminados: " + ids.length);
+      setMsg("Lotes completados eliminados: " + ids.length);
     } catch (e) {
       setMsg("Error: " + (e instanceof Error ? e.message : "error inesperado"));
     }
@@ -197,7 +197,7 @@ export default function AdminPage() {
         <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-3">
           <h2 className="text-sm font-bold text-gray-900">Respaldos de la base de datos</h2>
           <p className="text-[12px] text-gray-600 leading-relaxed">
-            Genera un archivo .json con el estado completo de la operación (histórico acumulado, reglas, batches, bitácora y configuración).
+            Genera un archivo .json con el estado completo de la operación (histórico acumulado, reglas, lotes de trabajo, bitácora y configuración).
             Recomendado: antes de cada “Consolidar Mes” y antes de cualquier limpieza.
           </p>
           <button

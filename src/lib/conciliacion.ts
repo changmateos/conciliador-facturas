@@ -7,16 +7,40 @@ export interface ResultRow {
   uuid: string;
   status: ResultStatus;
   location: string;
-  extraLocations: string[]; // otras ubicaciones donde también aparece
-  aparicionesPrincipal: number; // veces que aparece en el archivo principal
+  extraLocations: string[];
+  aparicionesPrincipal: number;
   sourceRow: number;
   values: Record<string, string | number | null>;
+}
+
+export interface HistInfo {
+  mes: number | null;
+  anio: number | null;
+  origen: string | null;
 }
 
 export interface ComplementaryHit {
   fileName: string;
   sheetName: string;
   sourceRow: number;
+  detalle: string;
+}
+
+const DETALLE_KEYS = /fecha|concepto|folio|raz[oó]n|rfc/i;
+
+function buildDetalle(
+  uuid: string,
+  values: Record<string, string | number | null>
+): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(values)) {
+    if (k.toLowerCase().includes("uuid")) continue;
+    if (v === null || v === undefined || String(v).trim() === "") continue;
+    if (DETALLE_KEYS.test(k)) parts.push(k + ": " + String(v));
+    if (parts.length >= 3) break;
+  }
+  void uuid;
+  return parts.join(" · ");
 }
 
 export function buildComplementIndex(
@@ -29,6 +53,7 @@ export function buildComplementIndex(
         fileName: file.fileName,
         sheetName: file.sheetName,
         sourceRow: r.sourceRow,
+        detalle: buildDetalle(r.uuid, r.values),
       };
       const list = index.get(r.uuid);
       if (list) list.push(hit);
@@ -38,25 +63,34 @@ export function buildComplementIndex(
   return index;
 }
 
-// Consulta el histórico en lotes de 100 UUID para no saturar a Supabase
-export async function fetchHistoricalUuids(
+// Devuelve periodo y origen de cada UUID que ya vive en el histórico
+export async function fetchHistoricalMap(
   supabase: SupabaseClient,
   uuids: string[]
-): Promise<Set<string>> {
-  const found = new Set<string>();
+): Promise<Map<string, HistInfo>> {
+  const found = new Map<string, HistInfo>();
   const chunk = 100;
   for (let i = 0; i < uuids.length; i += chunk) {
     const part = uuids.slice(i, i + chunk);
     if (part.length === 0) continue;
     const { data, error } = await supabase
       .from("historical_invoices")
-      .select("uuid_fiscal")
+      .select("uuid_fiscal, mes_periodo, anio_periodo, origen_archivo")
       .in("uuid_fiscal", part);
     if (error) {
       throw new Error("Error consultando histórico: " + error.message);
     }
-    for (const row of data ?? []) {
-      found.add(String((row as { uuid_fiscal: string }).uuid_fiscal).toUpperCase());
+    for (const row of (data ?? []) as {
+      uuid_fiscal: string;
+      mes_periodo: number | null;
+      anio_periodo: number | null;
+      origen_archivo: string | null;
+    }[]) {
+      found.set(String(row.uuid_fiscal).toUpperCase(), {
+        mes: row.mes_periodo,
+        anio: row.anio_periodo,
+        origen: row.origen_archivo,
+      });
     }
   }
   return found;
@@ -64,7 +98,7 @@ export async function fetchHistoricalUuids(
 
 export function reconcile(
   principalRows: NormalizedRow[],
-  historical: Set<string>,
+  historical: Map<string, HistInfo>,
   compIndex: Map<string, ComplementaryHit[]>
 ): ResultRow[] {
   const counts = new Map<string, number>();

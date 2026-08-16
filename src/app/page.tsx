@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import * as XLSX from "xlsx";
 import { createClient } from "@/lib/supabase/client";
 import LogoutButton from "@/components/logout-button";
 import Dropzone from "@/components/dropzone";
@@ -13,12 +14,12 @@ import type { LocalInvoiceInfo } from "@/components/invoice-modal";
 import type { FileRole, NormalizedRow, ParsedFile, SemanticField, UuidMode } from "@/lib/excel/parser";
 import { buildAutoMapping, buildAutoVisible, detectHeaderRow, getHeaders, normalizeRows, readWorkbook, uuidColumnOf } from "@/lib/excel/parser";
 import { buildFileDraft, rememberFile } from "@/lib/excel/memory";
-import type { ResultRow } from "@/lib/conciliacion";
-import { buildComplementIndex, fetchHistoricalUuids, reconcile } from "@/lib/conciliacion";
+import type { ComplementaryHit, HistInfo, ResultRow } from "@/lib/conciliacion";
+import { buildComplementIndex, fetchHistoricalMap, reconcile } from "@/lib/conciliacion";
 import type { RuleRow } from "@/lib/reglas";
 import { classifyRows, ruleDescription } from "@/lib/reglas";
 import type { BatchRow } from "@/lib/batches";
-import { BATCH_STATUS_LABEL, ITEM_STATUSES, addEvent, fetchBatches } from "@/lib/batches";
+import { ITEM_STATUSES, addEvent, fetchBatches } from "@/lib/batches";
 
 interface Colab {
   id: string;
@@ -31,7 +32,7 @@ function preFromHeaders(headers: string[], mapping: Record<string, SemanticField
   return pre;
 }
 
-function batchBadge(status: string) {
+function loteBadge(status: string) {
   if (status === "COMPLETADO")
     return <span className="text-[10px] font-bold rounded-full px-2.5 py-1 bg-green-100 text-green-700">COMPLETADO</span>;
   if (status === "EN_PROCESO")
@@ -51,10 +52,14 @@ export default function DashboardPage() {
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState("");
   const [results, setResults] = useState<ResultRow[] | null>(null);
+  const [histMap, setHistMap] = useState<Map<string, HistInfo> | null>(null);
+  const [compIdx, setCompIdx] = useState<Map<string, ComplementaryHit[]> | null>(null);
   const [showCols, setShowCols] = useState(false);
   const [showDict, setShowDict] = useState(false);
   const [showSeg, setShowSeg] = useState(false);
   const [modalUuid, setModalUuid] = useState<string | null>(null);
+  const [reportBusy, setReportBusy] = useState(false);
+  const [reportMsg, setReportMsg] = useState("");
 
   const [uma, setUma] = useState(117.31);
   const [rules, setRules] = useState<RuleRow[]>([]);
@@ -106,7 +111,11 @@ export default function DashboardPage() {
       if (p) {
         setColabs(
           (p as { id: string; email: string; role: string }[])
-            .filter((x) => x.role === "COLABORADOR_CONTADOR")
+            .filter((x) =>
+              x.role === "COLABORADOR_CONTADOR" ||
+              x.role === "ADMIN_CONTADOR" ||
+              x.role === "SUPER_USUARIO"
+            )
             .map((x) => ({ id: x.id, email: x.email }))
         );
       }
@@ -146,6 +155,7 @@ export default function DashboardPage() {
     }
     return map;
   }, [files, rowsById]);
+
   const readyCount = files.filter(
     (f) => (rowsById[f.id] ?? []).length > 0 && Object.values(f.mapping).includes("UUID")
   ).length;
@@ -361,10 +371,12 @@ export default function DashboardPage() {
     try {
       const principalRowsList = rowsById[principal.id] ?? [];
       const uniqueUuids = Array.from(new Set(principalRowsList.map((r) => r.uuid)));
-      const historical = await fetchHistoricalUuids(supabase, uniqueUuids);
+      const historical = await fetchHistoricalMap(supabase, uniqueUuids);
       const compIndex = buildComplementIndex(
         complementarios.map((f) => ({ file: f, rows: rowsById[f.id] ?? [] }))
       );
+      setHistMap(historical);
+      setCompIdx(compIndex);
       setResults(reconcile(principalRowsList, historical, compIndex));
     } catch (err) {
       setRunError(err instanceof Error ? err.message : "Error inesperado al conciliar");
@@ -373,10 +385,10 @@ export default function DashboardPage() {
     }
   }
 
-  async function assignBatch(groupKey: string, titulo: string, rows: ResultRow[]) {
+  async function assignLote(groupKey: string, titulo: string, rows: ResultRow[]) {
     const colabId = assignSel[groupKey];
     if (!colabId) {
-      window.alert("Selecciona un colaborador");
+      window.alert("Selecciona a la persona revisora");
       return;
     }
     setAssigning(groupKey);
@@ -387,7 +399,7 @@ export default function DashboardPage() {
         .select()
         .single();
       if (error || !batch) {
-        window.alert(error ? error.message : "No se pudo crear el batch");
+        window.alert(error ? error.message : "No se pudo crear el lote");
         return;
       }
       const batchId = (batch as { id: string }).id;
@@ -397,17 +409,116 @@ export default function DashboardPage() {
         window.alert(errItems.message);
         return;
       }
-      await addEvent(supabase, batchId, null, email, "ASIGNACION", "PENDIENTE", "Batch creado y asignado desde el panel");
+      await addEvent(supabase, batchId, null, email, "ASIGNACION", "PENDIENTE", "Lote creado y asignado desde el panel");
       const colab = colabs.find((c) => c.id === colabId);
       setBatchedBy((prev) => {
         const next = { ...prev };
-        next[groupKey] = colab ? colab.email : "colaborador";
+        next[groupKey] = colab ? colab.email : "revisor";
         return next;
       });
       await refreshBatches();
     } finally {
       setAssigning("");
     }
+  }
+
+  async function generarReporteFinal() {
+    if (!principal || !results || !histMap || !compIdx) return;
+    setReportBusy(true);
+    setReportMsg("");
+    try {
+      const principalRowsList = rowsById[principal.id] ?? [];
+      const uniqueUuids = Array.from(new Set(principalRowsList.map((r) => r.uuid)));
+      const notFound = uniqueUuids.filter((u) => !histMap.has(u) && !compIdx.has(u));
+
+      const loteByUuid: Record<string, { status: string; nota: string | null; titulo: string }> = {};
+      if (notFound.length > 0) {
+        const { data: items } = await supabase
+          .from("batch_items")
+          .select("uuid_fiscal, status, nota, batch_id")
+          .in("uuid_fiscal", notFound);
+        const batchIds = Array.from(new Set(((items ?? []) as { batch_id: string }[]).map((i) => i.batch_id)));
+        let tituloById: Record<string, string> = {};
+        if (batchIds.length > 0) {
+          const { data: bats } = await supabase.from("batches").select("id, titulo").in("id", batchIds);
+          for (const b of (bats ?? []) as { id: string; titulo: string }[]) tituloById[b.id] = b.titulo;
+        }
+        for (const it of (items ?? []) as { uuid_fiscal: string; status: string; nota: string | null; batch_id: string }[]) {
+          if (!loteByUuid[it.uuid_fiscal]) {
+            loteByUuid[it.uuid_fiscal] = { status: it.status, nota: it.nota, titulo: tituloById[it.batch_id] ?? "" };
+          }
+        }
+      }
+
+      const seen = new Set<string>();
+      const rowsOut: Record<string, string | number>[] = [];
+      for (const r of principalRowsList) {
+        if (seen.has(r.uuid)) continue;
+        seen.add(r.uuid);
+        let estatus = "";
+        let ubicacion = "";
+        let observacion = "";
+
+        const h = histMap.get(r.uuid);
+        const hits = compIdx.get(r.uuid);
+        const lote = loteByUuid[r.uuid];
+
+        if (h) {
+          estatus = "Encontrada en histórico";
+          ubicacion = "Histórico acumulado";
+          observacion =
+            "Ya registrada en el histórico acumulado" +
+            (h.mes ? " (periodo " + h.mes + "/" + (h.anio ?? "") + ")" : "") +
+            (h.origen ? "; origen: " + h.origen : "") +
+            ".";
+        } else if (hits && hits.length > 0) {
+          const first = hits[0];
+          estatus = "Encontrada en archivo del mes";
+          ubicacion = first.fileName + " · " + first.sheetName + " · fila " + first.sourceRow;
+          observacion =
+            "Ubicada en el archivo del mes: " + first.fileName + " (hoja " + first.sheetName + ", fila " + first.sourceRow + ")." +
+            (first.detalle ? " Datos: " + first.detalle + "." : "") +
+            (hits.length > 1 ? " También aparece en otros " + (hits.length - 1) + " archivo(s)." : "");
+        } else if (lote && lote.status === "SUBIDA_SISTEMA") {
+          estatus = "Atendida y subida al sistema";
+          ubicacion = lote.titulo;
+          observacion = "Acción del revisor: subida al sistema. " + (lote.nota ?? "");
+        } else if (lote && lote.status === "NO_CORRESPONDE") {
+          estatus = "Revisada: no corresponde";
+          ubicacion = lote.titulo;
+          observacion = "Acción del revisor: no corresponde. " + (lote.nota ?? "");
+        } else if (lote && lote.status === "PENDIENTE_TERCIERO") {
+          estatus = "Pendiente por tercero";
+          ubicacion = lote.titulo;
+          observacion = "En espera de información de un tercero. " + (lote.nota ?? "");
+        } else {
+          estatus = "No encontrada";
+          ubicacion = "";
+          observacion = "No ubicada este mes; queda pendiente para el siguiente cierre.";
+        }
+
+        const base: Record<string, string | number> = {
+          UUID: r.uuid,
+          Estatus: estatus,
+          Ubicacion: ubicacion,
+          Observacion: observacion.trim(),
+        };
+        for (const c of principalVisibleCols) {
+          const v = r.values[c];
+          base[c] = v === null || v === undefined ? "" : v;
+        }
+        rowsOut.push(base);
+      }
+
+      const ws = XLSX.utils.json_to_sheet(rowsOut);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Reporte final");
+      XLSX.writeFile(wb, "reporte_final_facturas.xlsx");
+      setReportMsg("Reporte final generado con " + rowsOut.length + " facturas y sus observaciones.");
+    } catch (err) {
+      setReportMsg("Error al generar el reporte: " + (err instanceof Error ? err.message : "error inesperado"));
+    }
+    setReportBusy(false);
   }
 
   async function consolidarMes() {
@@ -417,7 +528,7 @@ export default function DashboardPage() {
     try {
       const principalRowsList = rowsById[principal.id] ?? [];
       const uniqueUuids = Array.from(new Set(principalRowsList.map((r) => r.uuid)));
-      const historical = await fetchHistoricalUuids(supabase, uniqueUuids);
+      const historical = await fetchHistoricalMap(supabase, uniqueUuids);
       const compIndex = buildComplementIndex(
         complementarios.map((f) => ({ file: f, rows: rowsById[f.id] ?? [] }))
       );
@@ -430,7 +541,7 @@ export default function DashboardPage() {
           .select("uuid_fiscal")
           .in("uuid_fiscal", notFound)
           .eq("status", "SUBIDA_SISTEMA");
-        for (const it of items ?? []) subidaSet.add((it as { uuid_fiscal: string }).uuid_fiscal);
+        for (const it of (items ?? []) as { uuid_fiscal: string }[]) subidaSet.add(it.uuid_fiscal);
       }
 
       const now = new Date();
@@ -496,7 +607,7 @@ export default function DashboardPage() {
             email,
             "CONSOLIDACION",
             null,
-            "Consolidar Mes: " + count + " factura(s) de este batch pasaron al histórico"
+            "Consolidar Mes: " + count + " factura(s) de este lote pasaron al histórico"
           );
         }
       }
@@ -529,7 +640,7 @@ export default function DashboardPage() {
               <nav className="flex items-center gap-1 text-[12px] font-semibold">
                 <span className="rounded-lg bg-blue-50 text-blue-700 px-3 py-1.5">Panel</span>
                 <Link href="/reglas" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Reglas y UMA</Link>
-                <Link href="/mis-batches" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Mis Batches</Link>
+                <Link href="/mis-batches" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Mis lotes</Link>
                 {role === "SUPER_USUARIO" ? (
                   <Link href="/admin" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Mantenimiento</Link>
                 ) : null}
@@ -781,70 +892,94 @@ export default function DashboardPage() {
               segmentOptions={segmentInfo.options}
             />
           ) : null}
+
+          {results ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 border border-gray-200 rounded-lg px-4 py-3 bg-gray-50">
+              <p className="text-[12px] text-gray-600 max-w-xl">
+                <strong>Reporte final de facturas:</strong> un .xlsx con estatus, ubicación y una observación automática por factura (histórico, archivo del mes o acción del lote finalizado).
+              </p>
+              <button
+                onClick={generarReporteFinal}
+                disabled={reportBusy}
+                className="rounded-lg bg-green-600 text-white text-[12px] font-semibold px-4 py-2 hover:bg-green-700 disabled:opacity-50"
+              >
+                {reportBusy ? "Generando…" : "Reporte final (.xlsx)"}
+              </button>
+            </div>
+          ) : null}
+          {reportMsg ? (
+            <p className="text-[12px] text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">{reportMsg}</p>
+          ) : null}
         </div>
 
         {groups ? (
           <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
             <div>
-              <h2 className="text-sm font-bold text-gray-900">Clasificación por reglas y asignación de batches</h2>
+              <h2 className="text-sm font-bold text-gray-900">Clasificación por reglas y asignación de lotes de trabajo</h2>
               <p className="text-[12px] text-gray-500 mt-0.5">
-                UMA actual: {"$"}{uma.toFixed(2)} · Cada regla segmenta su propio grupo; una factura puede aparecer en varios grupos y en la columna “Segmentación” del reporte.
+                UMA actual: {"$"}{uma.toFixed(2)} · Los lotes se crean únicamente con facturas NO encontradas. Puedes asignarte un lote a ti mismo para revisar una parte.
               </p>
             </div>
-            {groups.map((g) => (
-              <div key={g.key} className="border border-gray-200 rounded-lg p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-[13px] font-bold text-gray-900">
-                      {g.rule ? g.rule.etiqueta : "Sin regla aplicada"}
-                      <span className="ml-2 text-[11px] font-bold text-gray-500 bg-gray-100 rounded-full px-2 py-0.5">
-                        {g.rows.length} facturas
-                      </span>
-                    </p>
-                    <p className="text-[12px] text-gray-500 mt-0.5">
-                      {g.rule ? ruleDescription(g.rule, uma) : "Facturas que no cumplieron ninguna regla."}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {batchedBy[g.key] ? (
-                      <span className="text-[11px] font-semibold bg-green-100 text-green-700 rounded-full px-3 py-1">
-                        Batch asignado a {batchedBy[g.key]}
-                      </span>
-                    ) : (
-                      <>
-                        <select
-                          value={assignSel[g.key] ?? ""}
-                          onChange={(e) => setAssignSel((p) => ({ ...p, [g.key]: e.target.value }))}
-                          disabled={g.rows.length === 0 || colabs.length === 0}
-                          className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[12px] text-gray-900"
-                        >
-                          <option value="">Selecciona colaborador…</option>
-                          {colabs.map((c) => (
-                            <option key={c.id} value={c.id}>{c.email}</option>
-                          ))}
-                        </select>
-                        <button
-                          onClick={() =>
-                            assignBatch(
-                              g.key,
-                              (g.rule ? g.rule.etiqueta : "Sin regla") + " · " + g.rows.length + " facturas",
-                              g.rows
-                            )
-                          }
-                          disabled={g.rows.length === 0 || !assignSel[g.key] || assigning === g.key}
-                          className="rounded-lg bg-blue-700 text-white text-[12px] font-semibold px-3.5 py-1.5 hover:bg-blue-800 disabled:opacity-50"
-                        >
-                          {assigning === g.key ? "Asignando…" : "Crear batch y asignar"}
-                        </button>
-                      </>
-                    )}
+            {groups.map((g) => {
+              const asignables = g.rows.filter((r) => r.status === "NO_ENCONTRADA");
+              return (
+                <div key={g.key} className="border border-gray-200 rounded-lg p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[13px] font-bold text-gray-900">
+                        {g.rule ? g.rule.etiqueta : "Sin regla aplicada"}
+                        <span className="ml-2 text-[11px] font-bold text-gray-500 bg-gray-100 rounded-full px-2 py-0.5">
+                          {g.rows.length} facturas
+                        </span>
+                        <span className="ml-1 text-[11px] font-bold text-red-600 bg-red-50 rounded-full px-2 py-0.5">
+                          {asignables.length} no encontradas
+                        </span>
+                      </p>
+                      <p className="text-[12px] text-gray-500 mt-0.5">
+                        {g.rule ? ruleDescription(g.rule, uma) : "Facturas que no cumplieron ninguna regla."}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {batchedBy[g.key] ? (
+                        <span className="text-[11px] font-semibold bg-green-100 text-green-700 rounded-full px-3 py-1">
+                          Lote asignado a {batchedBy[g.key]}
+                        </span>
+                      ) : (
+                        <>
+                          <select
+                            value={assignSel[g.key] ?? ""}
+                            onChange={(e) => setAssignSel((p) => ({ ...p, [g.key]: e.target.value }))}
+                            disabled={asignables.length === 0 || colabs.length === 0}
+                            className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[12px] text-gray-900"
+                          >
+                            <option value="">Selecciona persona revisora…</option>
+                            {colabs.map((c) => (
+                              <option key={c.id} value={c.id}>{c.email}</option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() =>
+                              assignLote(
+                                g.key,
+                                (g.rule ? g.rule.etiqueta : "Sin regla") + " · " + asignables.length + " facturas",
+                                asignables
+                              )
+                            }
+                            disabled={asignables.length === 0 || !assignSel[g.key] || assigning === g.key}
+                            className="rounded-lg bg-blue-700 text-white text-[12px] font-semibold px-3.5 py-1.5 hover:bg-blue-800 disabled:opacity-50"
+                          >
+                            {assigning === g.key ? "Asignando…" : "Crear lote y asignar"}
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             {colabs.length === 0 ? (
               <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                 No hay colaboradores registrados. Créalos en la consola de usuarios del sistema y asígnales el rol de colaborador.
+                No hay personas revisoras registradas. Créalas en la consola de usuarios del sistema y asígnales un rol.
               </p>
             ) : null}
           </div>
@@ -856,9 +991,9 @@ export default function DashboardPage() {
             className="w-full flex items-center justify-between px-6 py-4 bg-white hover:bg-gray-50 transition-colors"
           >
             <span className="text-left">
-              <span className="text-sm font-bold text-gray-900">Seguimiento de batches</span>
+              <span className="text-sm font-bold text-gray-900">Seguimiento de lotes de trabajo</span>
               <span className="block text-[12px] text-gray-500 mt-0.5">
-                Estatus, contadores por factura y bitácora de todos los batches asignados.
+                Estatus, contadores por factura y bitácora de todos los lotes asignados.
               </span>
             </span>
             <span className="text-[11px] font-semibold text-gray-500 shrink-0">
@@ -868,7 +1003,7 @@ export default function DashboardPage() {
           {showSeg ? (
             <div className="px-6 pb-6 space-y-4 border-t border-gray-100">
               {(batchesAdmin ?? []).length === 0 ? (
-                <p className="text-[13px] text-gray-500">Aún no hay batches creados.</p>
+                <p className="text-[13px] text-gray-500">Aún no hay lotes creados.</p>
               ) : (
                 (batchesAdmin ?? []).map((b) => {
                   const counts: Record<string, number> = {};
@@ -878,7 +1013,7 @@ export default function DashboardPage() {
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="text-[13px] font-bold text-gray-900">{b.titulo}</p>
                         <div className="flex items-center gap-2">
-                          {batchBadge(b.status)}
+                          {loteBadge(b.status)}
                           <button
                             onClick={() => setShowLogAdmin((p) => ({ ...p, [b.id]: !p[b.id] }))}
                             className="text-[11px] font-semibold text-gray-600 border border-gray-300 rounded-lg px-2.5 py-1 hover:bg-gray-100"
@@ -944,10 +1079,10 @@ export default function DashboardPage() {
           <h2 className="text-sm font-bold text-gray-900">Cierre mensual</h2>
           <p className="text-[12px] text-gray-600 leading-relaxed">
             <strong>Consolidar Mes</strong> envía al histórico acumulado (con todos sus campos) únicamente:
-            (1) las facturas encontradas en archivos complementarios este mes, y
-            (2) las no encontradas que el colaborador marcó como <strong>“Subida al sistema”</strong>.
+            (1) las facturas encontradas en archivos del mes, y
+            (2) las no encontradas que la persona revisora marcó como <strong>“Subida al sistema”</strong>.
             Las que ya estaban en el histórico se omiten y las pendientes se quedan para el siguiente mes.
-            El cierre nunca duplica: cada UUID se consolida una sola vez. A cada batch tocado se le escribe un evento de CONSOLIDACIÓN en su bitácora.
+            El cierre nunca duplica: cada UUID se consolida una sola vez. A cada lote tocado se le escribe un evento de CONSOLIDACIÓN en su bitácora.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <button
