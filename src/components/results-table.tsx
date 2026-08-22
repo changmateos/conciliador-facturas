@@ -16,21 +16,13 @@ interface ResultsTableProps {
   groupKeysMap: Record<string, string[]>;
   segmentOptions: SegmentOption[];
   compIndex: Map<string, ComplementaryHit[]> | null;
-  dataFields: string[];
-  principalFieldHeader: Record<string, string | null>;
+  principalCols: string[];
+  compCols: string[];
 }
 
 type Filter = "TODAS" | "HISTORICO" | "COMPLEMENTARIO" | "NO_ENCONTRADA" | "SENALADAS";
 
 const PAGE = 200;
-
-const FIELD_LABEL: Record<string, string> = {
-  CONCEPTO: "Concepto",
-  FECHA: "Fecha",
-  FOLIO: "Folio",
-  MONTO: "Monto",
-  RETENCIONES: "Retenciones",
-};
 
 function segKey(r: ResultRow): string {
   return r.uuid + "|" + r.sourceRow;
@@ -62,8 +54,8 @@ export default function ResultsTable({
   groupKeysMap,
   segmentOptions,
   compIndex,
-  dataFields,
-  principalFieldHeader,
+  principalCols,
+  compCols,
 }: ResultsTableProps) {
   const [filter, setFilter] = useState<Filter>("TODAS");
   const [segment, setSegment] = useState("TODOS");
@@ -120,22 +112,13 @@ export default function ResultsTable({
     return hits && hits.length > 0 ? hits[0] : null;
   }
 
-  // Regla de fuente: encontrada en complementario -> dato del complementario;
-  // si no, dato del archivo principal.
-  function cellInfo(r: ResultRow, field: string): { text: string; fromComp: boolean } {
-    const hit = firstHit(r);
-    if (hit) {
-      const v = hit.mappedValues[field] ?? null;
-      return { text: v === null || v === undefined || String(v).trim() === "" ? "—" : String(v), fromComp: true };
-    }
-    const ph = principalFieldHeader[field] ?? null;
-    if (!ph) return { text: "—", fromComp: false };
-    const v = r.values[ph] ?? null;
-    return { text: v === null || v === undefined || String(v).trim() === "" ? "—" : String(v), fromComp: false };
+  function clean(v: string | number | null | undefined): string {
+    return v === null || v === undefined || String(v).trim() === "" ? "—" : String(v);
   }
 
   function exportXlsx() {
     const rows = filtered.map((r) => {
+      const hit = firstHit(r);
       const base: Record<string, string | number> = {
         UUID: r.uuid,
         Estatus:
@@ -151,8 +134,13 @@ export default function ResultsTable({
         TambienEn: r.extraLocations.join(" | "),
         FilaOrigen: r.sourceRow,
       };
-      for (const f of dataFields) {
-        base[FIELD_LABEL[f] ?? f] = cellInfo(r, f).text === "—" ? "" : cellInfo(r, f).text;
+      for (const pc of principalCols) {
+        const v = r.values[pc] ?? null;
+        base[pc] = v === null || v === undefined ? "" : v;
+      }
+      for (const cc of compCols) {
+        const v = hit ? hit.values[cc] ?? null : null;
+        base["Fuente · " + cc] = v === null || v === undefined ? "" : v;
       }
       return base;
     });
@@ -226,9 +214,14 @@ export default function ResultsTable({
               <th className="px-3 py-2 text-left font-semibold text-gray-500">Segmentación</th>
               <th className="px-3 py-2 text-left font-semibold text-gray-500">Señalamientos</th>
               <th className="px-3 py-2 text-left font-semibold text-gray-500">Ubicación exacta</th>
-              {dataFields.map((f) => (
-                <th key={f} className="px-3 py-2 text-left font-semibold text-blue-700 bg-blue-50/50">
-                  {FIELD_LABEL[f] ?? f}
+              {principalCols.map((pc) => (
+                <th key={pc} className="px-3 py-2 text-left font-semibold text-gray-700">
+                  {pc}
+                </th>
+              ))}
+              {compCols.map((cc) => (
+                <th key={cc} className="px-3 py-2 text-left font-semibold text-blue-700 bg-blue-50/50">
+                  Fuente · {cc}
                 </th>
               ))}
             </tr>
@@ -236,6 +229,7 @@ export default function ResultsTable({
           <tbody>
             {shown.map((r, i) => {
               const segs = segmentMap[segKey(r)] ?? [];
+              const hit = firstHit(r);
               return (
                 <tr key={r.uuid + "-" + r.sourceRow + "-" + i} className="border-t border-gray-100 hover:bg-gray-50/60">
                   <td className="px-3 py-2">
@@ -292,18 +286,23 @@ export default function ResultsTable({
                       {r.status === "NO_ENCONTRADA" ? "—" : r.location}
                     </span>
                   </td>
-                  {dataFields.map((f) => {
-                    const info = cellInfo(r, f);
+                  {principalCols.map((pc) => (
+                    <td key={pc} className="px-3 py-2 text-gray-700 max-w-[220px] truncate">
+                      {clean(r.values[pc] ?? null)}
+                    </td>
+                  ))}
+                  {compCols.map((cc) => {
+                    const v = hit ? hit.values[cc] ?? null : null;
                     return (
                       <td
-                        key={f}
+                        key={cc}
                         className={
                           "px-3 py-2 max-w-[220px] truncate " +
-                          (info.fromComp ? "text-blue-800 bg-blue-50/40" : "text-gray-700")
+                          (hit ? "text-blue-800 bg-blue-50/40" : "text-gray-400")
                         }
-                        title={info.fromComp ? "Dato del archivo complementario" : "Dato del archivo principal"}
+                        title={hit ? "Dato del archivo complementario" : "Sin coincidencia en complementarios"}
                       >
-                        {info.text}
+                        {hit ? clean(v) : "—"}
                       </td>
                     );
                   })}
@@ -312,7 +311,7 @@ export default function ResultsTable({
             })}
             {shown.length === 0 ? (
               <tr>
-                <td colSpan={5 + dataFields.length} className="px-3 py-6 text-center text-gray-400">
+                <td colSpan={5 + principalCols.length + compCols.length} className="px-3 py-6 text-center text-gray-400">
                   Sin resultados para esta combinación de filtros.
                 </td>
               </tr>

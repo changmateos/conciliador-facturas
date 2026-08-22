@@ -16,15 +16,6 @@ import { buildComplementIndex, fetchHistoricalMap, reconcile } from "@/lib/conci
 import type { RuleRow } from "@/lib/reglas";
 import { classifyRows, ruleDescription } from "@/lib/reglas";
 
-const FIELD_ORDER = ["CONCEPTO", "FECHA", "FOLIO", "MONTO", "RETENCIONES"] as const;
-const FIELD_LABEL: Record<string, string> = {
-  CONCEPTO: "Concepto",
-  FECHA: "Fecha",
-  FOLIO: "Folio",
-  MONTO: "Monto",
-  RETENCIONES: "Retenciones",
-};
-
 function preFromHeaders(headers: string[], mapping: Record<string, SemanticField>) {
   const pre: Record<string, boolean> = {};
   for (const h of headers) pre[h] = mapping[h] !== "NINGUNO";
@@ -45,6 +36,7 @@ export default function DashboardPage() {
   const [histMap, setHistMap] = useState<Map<string, HistInfo> | null>(null);
   const [compIdx, setCompIdx] = useState<Map<string, ComplementaryHit[]> | null>(null);
   const [showDict, setShowDict] = useState(false);
+  const [showFieldPanel, setShowFieldPanel] = useState(true);
   const [fieldSel, setFieldSel] = useState<Record<string, boolean>>({});
   const [reportBusy, setReportBusy] = useState(false);
   const [reportMsg, setReportMsg] = useState("");
@@ -109,48 +101,63 @@ export default function DashboardPage() {
     return getHeaders(sheet.rows, principal.headerRow);
   }, [principal]);
 
-  // Campos semánticos disponibles (mapeados en principal o complementarios)
-  const availableFields = useMemo(() => {
-    const present = new Set<string>();
-    if (principal) {
-      for (const h of Object.keys(principal.mapping)) {
-        const f = principal.mapping[h];
-        if (f !== "NINGUNO" && f !== "UUID") present.add(f);
+  // Del principal SOLO Concepto y Total (UUID va siempre como llave)
+  const principalConceptoCol = useMemo(() => {
+    if (!principal) return null;
+    const mapped =
+      Object.keys(principal.mapping).find((h) => principal.mapping[h] === "CONCEPTO") ?? null;
+    if (mapped) return mapped;
+    return principalHeaders.find((h) => h.toLowerCase().includes("concepto")) ?? null;
+  }, [principal, principalHeaders]);
+
+  const principalTotalCol = useMemo(() => {
+    if (!principal) return null;
+    const mapped =
+      Object.keys(principal.mapping).find((h) => principal.mapping[h] === "MONTO") ?? null;
+    if (mapped) return mapped;
+    return principalHeaders.find((h) => h.toLowerCase().includes("total")) ?? null;
+  }, [principal, principalHeaders]);
+
+  const principalCols = useMemo(() => {
+    const out: string[] = [];
+    if (principalConceptoCol) out.push(principalConceptoCol);
+    if (principalTotalCol) out.push(principalTotalCol);
+    return out;
+  }, [principalConceptoCol, principalTotalCol]);
+
+  // TODAS las columnas de los complementarios (excepto su columna UUID)
+  const compAllCols = useMemo(() => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const f of complementarios) {
+      const sheet = f.sheets.find((s) => s.name === f.sheetName);
+      if (!sheet) continue;
+      for (const h of getHeaders(sheet.rows, f.headerRow)) {
+        if (f.mapping[h] === "UUID") continue;
+        const low = h.toLowerCase();
+        if (!seen.has(low)) {
+          seen.add(low);
+          out.push(h);
+        }
       }
     }
-    for (const c of complementarios) {
-      for (const h of Object.keys(c.mapping)) {
-        const f = c.mapping[h];
-        if (f !== "NINGUNO" && f !== "UUID") present.add(f);
-      }
-    }
-    return FIELD_ORDER.filter((x) => present.has(x));
-  }, [principal, complementarios]);
+    return out;
+  }, [complementarios]);
 
   useEffect(() => {
     setFieldSel((prev) => {
       const next = { ...prev };
-      for (const f of availableFields) {
-        if (!(f in next)) next[f] = true;
+      for (const c of compAllCols) {
+        if (!(c in next)) next[c] = true;
       }
       return next;
     });
-  }, [availableFields]);
+  }, [compAllCols]);
 
-  const dataFields = useMemo(
-    () => availableFields.filter((f) => fieldSel[f]),
-    [availableFields, fieldSel]
+  const compColsChosen = useMemo(
+    () => compAllCols.filter((c) => fieldSel[c]),
+    [compAllCols, fieldSel]
   );
-
-  const principalFieldHeader = useMemo(() => {
-    const map: Record<string, string | null> = {};
-    for (const f of FIELD_ORDER) {
-      map[f] = principal
-        ? Object.keys(principal.mapping).find((h) => principal.mapping[h] === f) ?? null
-        : null;
-    }
-    return map;
-  }, [principal]);
 
   const conceptHeaders = useMemo(
     () =>
@@ -351,19 +358,6 @@ export default function DashboardPage() {
     }
   }
 
-  function fieldValue(r: ResultRow, field: string): string {
-    const hits = compIdx ? compIdx.get(r.uuid) : undefined;
-    const hit = hits && hits.length > 0 ? hits[0] : null;
-    if (hit) {
-      const v = hit.mappedValues[field] ?? null;
-      return v === null || v === undefined || String(v).trim() === "" ? "" : String(v);
-    }
-    const ph = principalFieldHeader[field] ?? null;
-    if (!ph) return "";
-    const v = r.values[ph] ?? null;
-    return v === null || v === undefined || String(v).trim() === "" ? "" : String(v);
-  }
-
   async function generarReporteFinal() {
     if (!principal || !results || !histMap || !compIdx) return;
     setReportBusy(true);
@@ -381,6 +375,7 @@ export default function DashboardPage() {
 
         const h = histMap.get(r.uuid);
         const hits = compIdx.get(r.uuid);
+        const hit = hits && hits.length > 0 ? hits[0] : null;
 
         if (h) {
           estatus = "Encontrada en histórico";
@@ -390,13 +385,12 @@ export default function DashboardPage() {
             (h.mes ? " (periodo " + h.mes + "/" + (h.anio ?? "") + ")" : "") +
             (h.origen ? "; origen: " + h.origen : "") +
             ".";
-        } else if (hits && hits.length > 0) {
-          const first = hits[0];
+        } else if (hits && hits.length > 0 && hit) {
           estatus = "Encontrada en archivo del mes";
-          ubicacion = first.fileName + " · " + first.sheetName + " · fila " + first.sourceRow;
+          ubicacion = hit.fileName + " · " + hit.sheetName + " · fila " + hit.sourceRow;
           observacion =
-            "Ubicada en el archivo del mes: " + first.fileName + " (hoja " + first.sheetName + ", fila " + first.sourceRow + ")." +
-            (first.detalle ? " Datos: " + first.detalle + "." : "") +
+            "Ubicada en el archivo del mes: " + hit.fileName + " (hoja " + hit.sheetName + ", fila " + hit.sourceRow + ")." +
+            (hit.detalle ? " Datos: " + hit.detalle + "." : "") +
             (hits.length > 1 ? " También aparece en otros " + (hits.length - 1) + " archivo(s)." : "");
         } else {
           estatus = "No encontrada";
@@ -410,8 +404,13 @@ export default function DashboardPage() {
           Ubicacion: ubicacion,
           Observacion: observacion.trim(),
         };
-        for (const f of dataFields) {
-          base[FIELD_LABEL[f] ?? f] = fieldValue(r, f);
+        for (const pc of principalCols) {
+          const v = r.values[pc] ?? null;
+          base[pc] = v === null || v === undefined ? "" : v;
+        }
+        for (const cc of compColsChosen) {
+          const v = hit ? hit.values[cc] ?? null : null;
+          base["Fuente · " + cc] = v === null || v === undefined ? "" : v;
         }
         rowsOut.push(base);
       }
@@ -629,22 +628,28 @@ export default function DashboardPage() {
                         </span>
                       </p>
                       <ul className="mt-2 grid sm:grid-cols-2 gap-x-6 gap-y-1 text-[12px] font-mono text-gray-600">
-                        {headers.map((h) => (
-                          <li key={h} className="flex items-center gap-2 min-w-0">
-                            {f.mapping[h] !== "NINGUNO" && fieldSel[f.mapping[h]] ? (
-                              <span className="text-[9px] font-bold bg-gray-200 text-gray-600 rounded px-1 shrink-0">TABLA</span>
-                            ) : (
-                              <span className="text-[9px] font-bold bg-gray-50 text-gray-300 rounded px-1 shrink-0">—</span>
-                            )}
-                            <span className="truncate">[{h}]</span>
-                            <span className={f.mapping[h] !== "NINGUNO" ? "text-blue-700 font-semibold shrink-0" : "text-gray-400 shrink-0"}>
-                              → {f.mapping[h] !== "NINGUNO" ? f.mapping[h] : "sin asignar"}
-                            </span>
-                            {h === col ? (
-                              <span className="text-green-700 font-semibold shrink-0">· llave de cruce</span>
-                            ) : null}
-                          </li>
-                        ))}
+                        {headers.map((h) => {
+                          const inReport =
+                            f.role === "PRINCIPAL"
+                              ? h === col || principalCols.includes(h)
+                              : fieldSel[h] ?? false;
+                          return (
+                            <li key={h} className="flex items-center gap-2 min-w-0">
+                              {inReport ? (
+                                <span className="text-[9px] font-bold bg-gray-200 text-gray-600 rounded px-1 shrink-0">TABLA</span>
+                              ) : (
+                                <span className="text-[9px] font-bold bg-gray-50 text-gray-300 rounded px-1 shrink-0">—</span>
+                              )}
+                              <span className="truncate">[{h}]</span>
+                              <span className={f.mapping[h] !== "NINGUNO" ? "text-blue-700 font-semibold shrink-0" : "text-gray-400 shrink-0"}>
+                                → {f.mapping[h] !== "NINGUNO" ? f.mapping[h] : "sin asignar"}
+                              </span>
+                              {h === col ? (
+                                <span className="text-green-700 font-semibold shrink-0">· llave de cruce</span>
+                              ) : null}
+                            </li>
+                          );
+                        })}
                       </ul>
                     </div>
                   );
@@ -723,25 +728,44 @@ export default function DashboardPage() {
           ) : null}
 
           {results ? (
-            <div className="flex flex-wrap items-center gap-2 border border-gray-200 rounded-lg px-4 py-3 bg-gray-50">
-              <span className="text-[12px] font-bold text-gray-700">Campos a mostrar:</span>
-              {availableFields.map((f) => (
-                <label
-                  key={f}
-                  className="flex items-center gap-1.5 text-[12px] font-semibold text-gray-700 bg-white border border-gray-300 rounded-full px-3 py-1 cursor-pointer hover:border-blue-400"
-                >
-                  <input
-                    type="checkbox"
-                    checked={fieldSel[f] ?? false}
-                    onChange={(e) => setFieldSel((p) => ({ ...p, [f]: e.target.checked }))}
-                    className="accent-blue-700 w-3.5 h-3.5"
-                  />
-                  {FIELD_LABEL[f] ?? f}
-                </label>
-              ))}
-              <span className="text-[11px] text-gray-500">
-                Encontradas → dato del complementario · No encontradas → dato del principal.
-              </span>
+            <div className="border border-gray-200 rounded-lg bg-gray-50">
+              <button
+                onClick={() => setShowFieldPanel(!showFieldPanel)}
+                className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-100 transition-colors"
+              >
+                <span className="text-[12px] font-bold text-gray-700">
+                  Campos de los complementarios a mostrar · {compColsChosen.length} de {compAllCols.length}
+                </span>
+                <span className="text-[11px] font-semibold text-gray-500">
+                  {showFieldPanel ? "Colapsar ▲" : "Expandir ▼"}
+                </span>
+              </button>
+              {showFieldPanel ? (
+                <div className="px-4 pb-4">
+                  <p className="text-[11px] text-gray-500 mb-2">
+                    Del principal se muestran fijos: UUID{principalConceptoCol ? ", " + principalConceptoCol : ""}{principalTotalCol ? ", " + principalTotalCol : ""}. Marca los campos de complementarios que quieres ver y exportar.
+                  </p>
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                    {compAllCols.map((c) => (
+                      <label
+                        key={c}
+                        className="flex items-center gap-2 text-[12px] font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg px-3 py-2 cursor-pointer hover:border-blue-400"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={fieldSel[c] ?? false}
+                          onChange={(e) => setFieldSel((p) => ({ ...p, [c]: e.target.checked }))}
+                          className="accent-blue-700 w-3.5 h-3.5"
+                        />
+                        <span className="truncate">[{c}]</span>
+                      </label>
+                    ))}
+                    {compAllCols.length === 0 ? (
+                      <p className="text-[12px] text-gray-500">Carga complementarios para ver sus campos.</p>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -752,15 +776,15 @@ export default function DashboardPage() {
               groupKeysMap={segmentInfo.keysMap}
               segmentOptions={segmentInfo.options}
               compIndex={compIdx}
-              dataFields={dataFields}
-              principalFieldHeader={principalFieldHeader}
+              principalCols={principalCols}
+              compCols={compColsChosen}
             />
           ) : null}
 
           {results ? (
             <div className="flex flex-wrap items-center justify-between gap-3 border border-gray-200 rounded-lg px-4 py-3 bg-gray-50">
               <p className="text-[12px] text-gray-600 max-w-xl">
-                <strong>Reporte final de facturas:</strong> un .xlsx con estatus, ubicación, observación automática y los campos elegidos con su regla de fuente.
+                <strong>Reporte final de facturas:</strong> un .xlsx con estatus, ubicación, observación automática, Concepto y Total del principal, y los campos de complementarios marcados.
               </p>
               <button
                 onClick={generarReporteFinal}
