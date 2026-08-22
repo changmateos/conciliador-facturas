@@ -10,7 +10,6 @@ interface FileCardProps {
   onSheetChange: (sheetName: string) => void;
   onHeaderRowChange: (rowIndex: number) => void;
   onMappingChange: (header: string, field: SemanticField) => void;
-  onVisibleChange: (header: string, visible: boolean) => void;
   onUuidModeChange: (mode: UuidMode) => void;
   onRemove: () => void;
 }
@@ -21,7 +20,6 @@ export default function FileCard({
   onSheetChange,
   onHeaderRowChange,
   onMappingChange,
-  onVisibleChange,
   onUuidModeChange,
   onRemove,
 }: FileCardProps) {
@@ -31,7 +29,7 @@ export default function FileCard({
   const hasUuid = Object.values(file.mapping).includes("UUID");
   const ready = hasUuid && rows.length > 0;
   const previewCols = headers
-    .filter((h) => file.visible[h] && file.mapping[h] !== "UUID")
+    .filter((h) => file.mapping[h] !== "NINGUNO" && file.mapping[h] !== "UUID")
     .slice(0, 6);
   const headerOptions = Math.min(15, sheet ? sheet.rows.length : 15);
 
@@ -121,13 +119,13 @@ export default function FileCard({
           {file.uuidMode === "TEXTO" ? (
             <p className="text-[12px] text-blue-800 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
               Se buscará el patrón 8-4-4-4-12 dentro de cada celda (ej. "Concepto del Movimiento").
-              El texto completo se conserva como un campo más del diccionario y también se usa para la regla de palabras prohibidas; las filas sin UUID detectado se descartan del cruce.
+              El texto completo se conserva como un campo más del diccionario; las filas sin UUID detectado se descartan del cruce.
             </p>
           ) : null}
 
           <div>
             <p className="text-[11px] font-bold tracking-wide text-gray-500 uppercase">
-              Diccionario de datos · significado y visibilidad de cada columna
+              Diccionario de datos · significado de cada columna
             </p>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
               {headers.map((header) => (
@@ -151,15 +149,6 @@ export default function FileCard({
                       <option key={f} value={f}>{f}</option>
                     ))}
                   </select>
-                  <label className="mt-2 flex items-center gap-2 text-[11px] font-semibold text-gray-600 select-none cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={file.visible[header] ?? false}
-                      onChange={(e) => onVisibleChange(header, e.target.checked)}
-                      className="accent-blue-700 w-3.5 h-3.5"
-                    />
-                    Ver en tabla del dashboard
-                  </label>
                 </div>
               ))}
             </div>

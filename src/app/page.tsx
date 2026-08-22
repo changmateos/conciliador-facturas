@@ -16,6 +16,15 @@ import { buildComplementIndex, fetchHistoricalMap, reconcile } from "@/lib/conci
 import type { RuleRow } from "@/lib/reglas";
 import { classifyRows, ruleDescription } from "@/lib/reglas";
 
+const FIELD_ORDER = ["CONCEPTO", "FECHA", "FOLIO", "MONTO", "RETENCIONES"] as const;
+const FIELD_LABEL: Record<string, string> = {
+  CONCEPTO: "Concepto",
+  FECHA: "Fecha",
+  FOLIO: "Folio",
+  MONTO: "Monto",
+  RETENCIONES: "Retenciones",
+};
+
 function preFromHeaders(headers: string[], mapping: Record<string, SemanticField>) {
   const pre: Record<string, boolean> = {};
   for (const h of headers) pre[h] = mapping[h] !== "NINGUNO";
@@ -35,9 +44,8 @@ export default function DashboardPage() {
   const [results, setResults] = useState<ResultRow[] | null>(null);
   const [histMap, setHistMap] = useState<Map<string, HistInfo> | null>(null);
   const [compIdx, setCompIdx] = useState<Map<string, ComplementaryHit[]> | null>(null);
-  const [showCols, setShowCols] = useState(false);
   const [showDict, setShowDict] = useState(false);
-  const [showSource, setShowSource] = useState<Record<string, boolean>>({});
+  const [fieldSel, setFieldSel] = useState<Record<string, boolean>>({});
   const [reportBusy, setReportBusy] = useState(false);
   const [reportMsg, setReportMsg] = useState("");
 
@@ -101,55 +109,48 @@ export default function DashboardPage() {
     return getHeaders(sheet.rows, principal.headerRow);
   }, [principal]);
 
-  const principalVisibleCols = useMemo(
-    () => principalHeaders.filter((h) => principal !== null && principal.visible[h] && principal.mapping[h] !== "UUID"),
-    [principalHeaders, principal]
-  );
-
-  const principalAllCols = useMemo(
-    () => principalHeaders.filter((h) => principal !== null && principal.mapping[h] !== "UUID"),
-    [principalHeaders, principal]
-  );
-
-  // Unión de campos de los complementarios (para el selector de fuente)
-  const sourceAllCols = useMemo(() => {
-    const out: string[] = [];
-    const seen = new Set<string>();
-    for (const f of complementarios) {
-      const sheet = f.sheets.find((s) => s.name === f.sheetName);
-      if (!sheet) continue;
-      for (const h of getHeaders(sheet.rows, f.headerRow)) {
-        if (f.mapping[h] === "UUID") continue;
-        if (!seen.has(h)) {
-          seen.add(h);
-          out.push(h);
-        }
+  // Campos semánticos disponibles (mapeados en principal o complementarios)
+  const availableFields = useMemo(() => {
+    const present = new Set<string>();
+    if (principal) {
+      for (const h of Object.keys(principal.mapping)) {
+        const f = principal.mapping[h];
+        if (f !== "NINGUNO" && f !== "UUID") present.add(f);
       }
     }
-    return out;
-  }, [complementarios]);
+    for (const c of complementarios) {
+      for (const h of Object.keys(c.mapping)) {
+        const f = c.mapping[h];
+        if (f !== "NINGUNO" && f !== "UUID") present.add(f);
+      }
+    }
+    return FIELD_ORDER.filter((x) => present.has(x));
+  }, [principal, complementarios]);
 
-  // Pre-marcado por defecto: campos ya mapeados en los complementarios
   useEffect(() => {
-    setShowSource((prev) => {
+    setFieldSel((prev) => {
       const next = { ...prev };
-      for (const f of complementarios) {
-        const sheet = f.sheets.find((s) => s.name === f.sheetName);
-        if (!sheet) continue;
-        for (const h of getHeaders(sheet.rows, f.headerRow)) {
-          if (!(h in next)) {
-            next[h] = f.mapping[h] !== "NINGUNO" && f.mapping[h] !== "UUID";
-          }
-        }
+      for (const f of availableFields) {
+        if (!(f in next)) next[f] = true;
       }
       return next;
     });
-  }, [complementarios]);
+  }, [availableFields]);
 
-  const sourceColsChosen = useMemo(
-    () => sourceAllCols.filter((h) => showSource[h]),
-    [sourceAllCols, showSource]
+  const dataFields = useMemo(
+    () => availableFields.filter((f) => fieldSel[f]),
+    [availableFields, fieldSel]
   );
+
+  const principalFieldHeader = useMemo(() => {
+    const map: Record<string, string | null> = {};
+    for (const f of FIELD_ORDER) {
+      map[f] = principal
+        ? Object.keys(principal.mapping).find((h) => principal.mapping[h] === f) ?? null
+        : null;
+    }
+    return map;
+  }, [principal]);
 
   const conceptHeaders = useMemo(
     () =>
@@ -319,12 +320,6 @@ export default function DashboardPage() {
     );
   }
 
-  function handleVisibleChange(id: string, header: string, visible: boolean) {
-    const pre = preById[id] ?? {};
-    const clear = pre[header] !== true;
-    updateFile(id, (f) => ({ ...f, visible: { ...f.visible, [header]: visible } }), clear);
-  }
-
   function handleUuidModeChange(id: string, mode: UuidMode) {
     updateFile(id, (f) => ({ ...f, uuidMode: mode }), true);
   }
@@ -354,6 +349,19 @@ export default function DashboardPage() {
     } finally {
       setRunning(false);
     }
+  }
+
+  function fieldValue(r: ResultRow, field: string): string {
+    const hits = compIdx ? compIdx.get(r.uuid) : undefined;
+    const hit = hits && hits.length > 0 ? hits[0] : null;
+    if (hit) {
+      const v = hit.mappedValues[field] ?? null;
+      return v === null || v === undefined || String(v).trim() === "" ? "" : String(v);
+    }
+    const ph = principalFieldHeader[field] ?? null;
+    if (!ph) return "";
+    const v = r.values[ph] ?? null;
+    return v === null || v === undefined || String(v).trim() === "" ? "" : String(v);
   }
 
   async function generarReporteFinal() {
@@ -402,14 +410,8 @@ export default function DashboardPage() {
           Ubicacion: ubicacion,
           Observacion: observacion.trim(),
         };
-        const hit = hits && hits.length > 0 ? hits[0] : null;
-        for (const sc of sourceColsChosen) {
-          const v = hit ? hit.values[sc] ?? null : null;
-          base["Fuente · " + sc] = v === null || v === undefined ? "" : v;
-        }
-        for (const c of principalVisibleCols) {
-          const v = r.values[c];
-          base[c] = v === null || v === undefined ? "" : v;
+        for (const f of dataFields) {
+          base[FIELD_LABEL[f] ?? f] = fieldValue(r, f);
         }
         rowsOut.push(base);
       }
@@ -454,7 +456,6 @@ export default function DashboardPage() {
           leftPending += 1;
           continue;
         }
-        // Consolidado tipo JOIN: principal + todos los complementarios donde aparece
         const datos: Record<string, unknown> = {
           ...r.values,
           __origen: principal.fileName,
@@ -574,7 +575,6 @@ export default function DashboardPage() {
                 onSheetChange={(s) => handleSheetChange(principal.id, s)}
                 onHeaderRowChange={(r) => handleHeaderRowChange(principal.id, r)}
                 onMappingChange={(h, field) => handleMappingChange(principal.id, h, field)}
-                onVisibleChange={(h, v) => handleVisibleChange(principal.id, h, v)}
                 onUuidModeChange={(m) => handleUuidModeChange(principal.id, m)}
                 onRemove={() => removeFile(principal.id)}
               />
@@ -587,7 +587,6 @@ export default function DashboardPage() {
                 onSheetChange={(s) => handleSheetChange(f.id, s)}
                 onHeaderRowChange={(r) => handleHeaderRowChange(f.id, r)}
                 onMappingChange={(h, field) => handleMappingChange(f.id, h, field)}
-                onVisibleChange={(h, v) => handleVisibleChange(f.id, h, v)}
                 onUuidModeChange={(m) => handleUuidModeChange(f.id, m)}
                 onRemove={() => removeFile(f.id)}
               />
@@ -632,7 +631,7 @@ export default function DashboardPage() {
                       <ul className="mt-2 grid sm:grid-cols-2 gap-x-6 gap-y-1 text-[12px] font-mono text-gray-600">
                         {headers.map((h) => (
                           <li key={h} className="flex items-center gap-2 min-w-0">
-                            {f.visible[h] ? (
+                            {f.mapping[h] !== "NINGUNO" && fieldSel[f.mapping[h]] ? (
                               <span className="text-[9px] font-bold bg-gray-200 text-gray-600 rounded px-1 shrink-0">TABLA</span>
                             ) : (
                               <span className="text-[9px] font-bold bg-gray-50 text-gray-300 rounded px-1 shrink-0">—</span>
@@ -723,83 +722,45 @@ export default function DashboardPage() {
             </div>
           ) : null}
 
-          {results && principal ? (
-            <div className="border border-gray-200 rounded-lg overflow-hidden">
-              <button
-                onClick={() => setShowCols(!showCols)}
-                className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors"
-              >
-                <span className="text-[12px] font-bold text-gray-700">
-                  Columnas del reporte · {principalVisibleCols.length + sourceColsChosen.length} visibles
-                </span>
-                <span className="text-[11px] font-semibold text-gray-500">
-                  {showCols ? "Colapsar ▲" : "Expandir ▼"}
-                </span>
-              </button>
-              {showCols ? (
-                <div className="p-4 space-y-4 bg-white">
-                  <div>
-                    <p className="text-[11px] font-bold tracking-wide text-gray-500 uppercase mb-2">Del archivo principal</p>
-                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                      {principalAllCols.map((h) => (
-                        <label
-                          key={h}
-                          className="flex items-center gap-2 text-[12px] font-semibold text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 cursor-pointer hover:border-blue-400"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={principal.visible[h] ?? false}
-                            onChange={(e) => handleVisibleChange(principal.id, h, e.target.checked)}
-                            className="accent-blue-700 w-3.5 h-3.5"
-                          />
-                          <span className="truncate">[{h}]</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-bold tracking-wide text-blue-700 uppercase mb-2">De los complementarios (fuente donde se encontró)</p>
-                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                      {sourceAllCols.map((h) => (
-                        <label
-                          key={h}
-                          className="flex items-center gap-2 text-[12px] font-semibold text-gray-700 bg-blue-50/50 border border-blue-200 rounded-lg px-3 py-2 cursor-pointer hover:border-blue-400"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={showSource[h] ?? false}
-                            onChange={(e) => setShowSource((p) => ({ ...p, [h]: e.target.checked }))}
-                            className="accent-blue-700 w-3.5 h-3.5"
-                          />
-                          <span className="truncate">[{h}]</span>
-                        </label>
-                      ))}
-                      {sourceAllCols.length === 0 ? (
-                        <p className="text-[12px] text-gray-500">Carga complementarios para ver sus campos.</p>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              ) : null}
+          {results ? (
+            <div className="flex flex-wrap items-center gap-2 border border-gray-200 rounded-lg px-4 py-3 bg-gray-50">
+              <span className="text-[12px] font-bold text-gray-700">Campos a mostrar:</span>
+              {availableFields.map((f) => (
+                <label
+                  key={f}
+                  className="flex items-center gap-1.5 text-[12px] font-semibold text-gray-700 bg-white border border-gray-300 rounded-full px-3 py-1 cursor-pointer hover:border-blue-400"
+                >
+                  <input
+                    type="checkbox"
+                    checked={fieldSel[f] ?? false}
+                    onChange={(e) => setFieldSel((p) => ({ ...p, [f]: e.target.checked }))}
+                    className="accent-blue-700 w-3.5 h-3.5"
+                  />
+                  {FIELD_LABEL[f] ?? f}
+                </label>
+              ))}
+              <span className="text-[11px] text-gray-500">
+                Encontradas → dato del complementario · No encontradas → dato del principal.
+              </span>
             </div>
           ) : null}
 
           {results ? (
             <ResultsTable
               results={results}
-              visibleCols={principalVisibleCols}
               segmentMap={segmentInfo.labelMap}
               groupKeysMap={segmentInfo.keysMap}
               segmentOptions={segmentInfo.options}
               compIndex={compIdx}
-              sourceCols={sourceColsChosen}
+              dataFields={dataFields}
+              principalFieldHeader={principalFieldHeader}
             />
           ) : null}
 
           {results ? (
             <div className="flex flex-wrap items-center justify-between gap-3 border border-gray-200 rounded-lg px-4 py-3 bg-gray-50">
               <p className="text-[12px] text-gray-600 max-w-xl">
-                <strong>Reporte final de facturas:</strong> un .xlsx con estatus, ubicación, observación automática y las columnas de fuente elegidas.
+                <strong>Reporte final de facturas:</strong> un .xlsx con estatus, ubicación, observación automática y los campos elegidos con su regla de fuente.
               </p>
               <button
                 onClick={generarReporteFinal}
