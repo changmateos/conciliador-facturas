@@ -30,7 +30,7 @@ export default function AdminPage() {
         .maybeSingle();
       const r = prof ? (prof as { role: string }).role : "";
       if (r === "SUPER_USUARIO") setAllowed(true);
-      else router.replace(r === "COLABORADOR_CONTADOR" ? "/mis-batches" : "/");
+      else router.replace("/");
     });
   }, [supabase, router]);
 
@@ -44,7 +44,7 @@ export default function AdminPage() {
         if (error) throw new Error(t + ": " + error.message);
         backup[t] = data ?? [];
       }
-      backup._meta = { generado: new Date().toISOString(), correo: email, version: 1 };
+      backup._meta = { generado: new Date().toISOString(), correo: email, version: 2 };
       const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -117,38 +117,6 @@ export default function AdminPage() {
     setBusy("");
   }
 
-  async function purgarBitacora() {
-    if (!window.confirm("Se eliminarán los eventos de bitácora con más de 90 días. ¿Continuar?")) return;
-    setBusy("purga");
-    const cutoff = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
-    const { error, count } = await supabase
-      .from("batch_events")
-      .delete({ count: "exact" })
-      .lt("created_at", cutoff);
-    setMsg(error ? "Error: " + error.message : "Eventos de bitácora purgados: " + String(count ?? 0));
-    setBusy("");
-  }
-
-  async function limpiarCompletados() {
-    if (!window.confirm("Se eliminarán los batches COMPLETADO con sus facturas y bitácora. ¿Continuar?")) return;
-    setBusy("limpia");
-    try {
-      const { data: comps } = await supabase.from("batches").select("id").eq("status", "COMPLETADO");
-      const ids = (comps ?? []).map((b) => (b as { id: string }).id);
-      if (ids.length === 0) {
-        setMsg("No hay lotes completados que eliminar.");
-        return;
-      }
-      await supabase.from("batch_events").delete().in("batch_id", ids);
-      await supabase.from("batch_items").delete().in("batch_id", ids);
-      await supabase.from("batches").delete().in("id", ids);
-      setMsg("Lotes completados eliminados: " + ids.length);
-    } catch (e) {
-      setMsg("Error: " + (e instanceof Error ? e.message : "error inesperado"));
-    }
-    setBusy("");
-  }
-
   async function vaciarHistorico() {
     if (!window.confirm("Se vaciará TODO el histórico acumulado. Esta acción es delicada. ¿Continuar?")) return;
     if (!window.confirm("Segunda confirmación: ¿vaciar histórico acumulado?")) return;
@@ -197,7 +165,7 @@ export default function AdminPage() {
         <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-3">
           <h2 className="text-sm font-bold text-gray-900">Respaldos de la base de datos</h2>
           <p className="text-[12px] text-gray-600 leading-relaxed">
-            Genera un archivo .json con el estado completo de la operación (histórico acumulado, reglas, lotes de trabajo, bitácora y configuración).
+            Genera un archivo .json con el estado completo de la operación (histórico acumulado, reglas, configuración y registros históricos de lotes).
             Recomendado: antes de cada “Consolidar Mes” y antes de cualquier limpieza.
           </p>
           <button
@@ -237,29 +205,13 @@ export default function AdminPage() {
 
         <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-3">
           <h2 className="text-sm font-bold text-gray-900">Limpiezas de mantenimiento</h2>
-          <div className="flex flex-wrap gap-3">
-            <button
-              onClick={purgarBitacora}
-              disabled={busy !== ""}
-              className="rounded-lg border border-gray-300 text-gray-700 text-[12px] font-semibold px-4 py-2 hover:bg-gray-50 disabled:opacity-50"
-            >
-              Purgar bitácora &gt; 90 días
-            </button>
-            <button
-              onClick={limpiarCompletados}
-              disabled={busy !== ""}
-              className="rounded-lg border border-gray-300 text-gray-700 text-[12px] font-semibold px-4 py-2 hover:bg-gray-50 disabled:opacity-50"
-            >
-              Eliminar batches completados
-            </button>
-            <button
-              onClick={vaciarHistorico}
-              disabled={busy !== ""}
-              className="rounded-lg border border-red-300 text-red-600 text-[12px] font-semibold px-4 py-2 hover:bg-red-50 disabled:opacity-50"
-            >
-              Vaciar histórico acumulado
-            </button>
-          </div>
+          <button
+            onClick={vaciarHistorico}
+            disabled={busy !== ""}
+            className="rounded-lg border border-red-300 text-red-600 text-[12px] font-semibold px-4 py-2 hover:bg-red-50 disabled:opacity-50"
+          >
+            Vaciar histórico acumulado
+          </button>
           <p className="text-[11px] text-gray-500">
             Todas las acciones piden confirmación y quedan disponibles solo para tu rol SUPER_USUARIO gracias a RLS.
           </p>

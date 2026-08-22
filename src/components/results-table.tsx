@@ -17,7 +17,7 @@ interface ResultsTableProps {
   groupKeysMap: Record<string, string[]>;
   segmentOptions: SegmentOption[];
   compIndex: Map<string, ComplementaryHit[]> | null;
-  sourceFields: string[];
+  sourceCols: string[];
 }
 
 type Filter = "TODAS" | "HISTORICO" | "COMPLEMENTARIO" | "NO_ENCONTRADA" | "SENALADAS";
@@ -55,7 +55,7 @@ export default function ResultsTable({
   groupKeysMap,
   segmentOptions,
   compIndex,
-  sourceFields,
+  sourceCols,
 }: ResultsTableProps) {
   const [filter, setFilter] = useState<Filter>("TODAS");
   const [segment, setSegment] = useState("TODOS");
@@ -130,9 +130,9 @@ export default function ResultsTable({
         FilaOrigen: r.sourceRow,
       };
       const hit = firstHit(r);
-      for (const sf of sourceFields) {
-        const v = hit && hit.mappedValues ? hit.mappedValues[sf] : null;
-        base["Fuente · " + sf] = v === null || v === undefined ? "" : v;
+      for (const sc of sourceCols) {
+        const v = hit ? hit.values[sc] ?? null : null;
+        base["Fuente · " + sc] = v === null || v === undefined ? "" : v;
       }
       for (const c of visibleCols) {
         const v = r.values[c];
@@ -210,9 +210,9 @@ export default function ResultsTable({
               <th className="px-3 py-2 text-left font-semibold text-gray-500">Segmentación</th>
               <th className="px-3 py-2 text-left font-semibold text-gray-500">Señalamientos</th>
               <th className="px-3 py-2 text-left font-semibold text-gray-500">Ubicación exacta</th>
-              {sourceFields.map((sf) => (
-                <th key={sf} className="px-3 py-2 text-left font-semibold text-blue-700 bg-blue-50/50">
-                  Fuente · {sf}
+              {sourceCols.map((sc) => (
+                <th key={sc} className="px-3 py-2 text-left font-semibold text-blue-700 bg-blue-50/50">
+                  Fuente · {sc}
                 </th>
               ))}
               {visibleCols.map((c) => (
@@ -280,10 +280,10 @@ export default function ResultsTable({
                       {r.status === "NO_ENCONTRADA" ? "—" : r.location}
                     </span>
                   </td>
-                  {sourceFields.map((sf) => {
-                    const v = hit && hit.mappedValues ? hit.mappedValues[sf] : null;
+                  {sourceCols.map((sc) => {
+                    const v = hit ? hit.values[sc] ?? null : null;
                     return (
-                      <td key={sf} className="px-3 py-2 text-gray-700 max-w-[220px] truncate bg-blue-50/30">
+                      <td key={sc} className="px-3 py-2 text-gray-700 max-w-[220px] truncate bg-blue-50/30">
                         {v === null || v === undefined ? "—" : String(v)}
                       </td>
                     );
@@ -298,7 +298,7 @@ export default function ResultsTable({
             })}
             {shown.length === 0 ? (
               <tr>
-                <td colSpan={5 + sourceFields.length + visibleCols.length} className="px-3 py-6 text-center text-gray-400">
+                <td colSpan={5 + sourceCols.length + visibleCols.length} className="px-3 py-6 text-center text-gray-400">
                   Sin resultados para esta combinación de filtros.
                 </td>
               </tr>

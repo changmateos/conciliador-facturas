@@ -28,14 +28,7 @@ export default function LoginPage() {
       return;
     }
 
-    const { data: prof } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", data.user.id)
-      .maybeSingle();
-    const role = prof ? (prof as { role: string }).role : "";
-
-    router.push(role === "COLABORADOR_CONTADOR" ? "/mis-batches" : "/");
+    router.push("/");
     router.refresh();
   }
 

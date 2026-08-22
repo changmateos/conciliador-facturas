@@ -24,8 +24,9 @@ export interface ComplementaryHit {
   sheetName: string;
   sourceRow: number;
   detalle: string;
-  // valores del complementario por campo semántico mapeado (CONCEPTO, FECHA, ...)
   mappedValues: Record<string, string | number | null>;
+  // v4: todos los valores de la fila del complementario (para JOIN y selector)
+  values: Record<string, string | number | null>;
 }
 
 const DETALLE_KEYS = /fecha|concepto|folio|raz[oó]n|rfc/i;
@@ -58,6 +59,7 @@ export function buildComplementIndex(
         sourceRow: r.sourceRow,
         detalle: buildDetalle(r.values),
         mappedValues,
+        values: r.values,
       };
       const list = index.get(r.uuid);
       if (list) list.push(hit);

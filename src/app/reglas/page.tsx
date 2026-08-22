@@ -173,7 +173,7 @@ export default function ReglasPage() {
         .eq("id", sess.user.id)
         .maybeSingle();
       if (prof && (prof as { role: string }).role === "COLABORADOR_CONTADOR") {
-        router.replace("/mis-batches");
+        router.replace("/");
         return;
       }
     }

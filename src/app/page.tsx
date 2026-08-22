@@ -1,16 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
 import { createClient } from "@/lib/supabase/client";
 import LogoutButton from "@/components/logout-button";
 import Dropzone from "@/components/dropzone";
 import FileCard from "@/components/file-card";
 import ResultsTable from "@/components/results-table";
-import InvoiceModal from "@/components/invoice-modal";
-import type { LocalInvoiceInfo } from "@/components/invoice-modal";
 import type { FileRole, NormalizedRow, ParsedFile, SemanticField, UuidMode } from "@/lib/excel/parser";
 import { buildAutoMapping, buildAutoVisible, detectHeaderRow, getHeaders, normalizeRows, readWorkbook, uuidColumnOf } from "@/lib/excel/parser";
 import { buildFileDraft, rememberFile } from "@/lib/excel/memory";
@@ -18,13 +15,6 @@ import type { ComplementaryHit, HistInfo, ResultRow } from "@/lib/conciliacion";
 import { buildComplementIndex, fetchHistoricalMap, reconcile } from "@/lib/conciliacion";
 import type { RuleRow } from "@/lib/reglas";
 import { classifyRows, ruleDescription } from "@/lib/reglas";
-import type { BatchRow } from "@/lib/batches";
-import { ITEM_STATUSES, addEvent, fetchBatches } from "@/lib/batches";
-
-interface Colab {
-  id: string;
-  email: string;
-}
 
 function preFromHeaders(headers: string[], mapping: Record<string, SemanticField>) {
   const pre: Record<string, boolean> = {};
@@ -32,17 +22,8 @@ function preFromHeaders(headers: string[], mapping: Record<string, SemanticField
   return pre;
 }
 
-function loteBadge(status: string) {
-  if (status === "COMPLETADO")
-    return <span className="text-[10px] font-bold rounded-full px-2.5 py-1 bg-green-100 text-green-700">COMPLETADO</span>;
-  if (status === "EN_PROCESO")
-    return <span className="text-[10px] font-bold rounded-full px-2.5 py-1 bg-blue-100 text-blue-700">EN PROCESO</span>;
-  return <span className="text-[10px] font-bold rounded-full px-2.5 py-1 bg-amber-100 text-amber-700">PENDIENTE</span>;
-}
-
 export default function DashboardPage() {
   const supabase = useMemo(() => createClient(), []);
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [userId, setUserId] = useState("");
   const [role, setRole] = useState("");
@@ -56,20 +37,13 @@ export default function DashboardPage() {
   const [compIdx, setCompIdx] = useState<Map<string, ComplementaryHit[]> | null>(null);
   const [showCols, setShowCols] = useState(false);
   const [showDict, setShowDict] = useState(false);
-  const [showSeg, setShowSeg] = useState(false);
-  const [modalUuid, setModalUuid] = useState<string | null>(null);
+  const [showSource, setShowSource] = useState<Record<string, boolean>>({});
   const [reportBusy, setReportBusy] = useState(false);
   const [reportMsg, setReportMsg] = useState("");
 
   const [uma, setUma] = useState(117.31);
   const [rules, setRules] = useState<RuleRow[]>([]);
-  const [colabs, setColabs] = useState<Colab[]>([]);
-  const [assignSel, setAssignSel] = useState<Record<string, string>>({});
-  const [batchedBy, setBatchedBy] = useState<Record<string, string>>({});
-  const [assigning, setAssigning] = useState("");
 
-  const [batchesAdmin, setBatchesAdmin] = useState<BatchRow[] | null>(null);
-  const [showLogAdmin, setShowLogAdmin] = useState<Record<string, boolean>>({});
   const [consolidating, setConsolidating] = useState(false);
   const [consolidateMsg, setConsolidateMsg] = useState("");
 
@@ -83,19 +57,9 @@ export default function DashboardPage() {
           .select("role")
           .eq("id", data.user.id)
           .maybeSingle();
-        const r = prof ? (prof as { role: string }).role : "";
-        setRole(r);
-        if (r === "COLABORADOR_CONTADOR") router.replace("/mis-batches");
+        setRole(prof ? (prof as { role: string }).role : "");
       }
     });
-  }, [supabase, router]);
-
-  const refreshBatches = useCallback(async () => {
-    try {
-      setBatchesAdmin(await fetchBatches(supabase, null));
-    } catch {
-      setBatchesAdmin([]);
-    }
   }, [supabase]);
 
   useEffect(() => {
@@ -107,21 +71,8 @@ export default function DashboardPage() {
         .select("id, nombre, tipo_condicion, valor_limite, etiqueta, palabras_prohibidas, campo_nombre")
         .order("created_at", { ascending: true });
       if (r) setRules(r as RuleRow[]);
-      const { data: p } = await supabase.from("profiles").select("id, email, role");
-      if (p) {
-        setColabs(
-          (p as { id: string; email: string; role: string }[])
-            .filter((x) =>
-              x.role === "COLABORADOR_CONTADOR" ||
-              x.role === "ADMIN_CONTADOR" ||
-              x.role === "SUPER_USUARIO"
-            )
-            .map((x) => ({ id: x.id, email: x.email }))
-        );
-      }
-      await refreshBatches();
     })();
-  }, [supabase, refreshBatches]);
+  }, [supabase]);
 
   useEffect(() => {
     for (const f of files) rememberFile(f.fileName, f);
@@ -135,26 +86,6 @@ export default function DashboardPage() {
 
   const principal = files.find((f) => f.role === "PRINCIPAL") ?? null;
   const complementarios = files.filter((f) => f.role === "COMPLEMENTARIO");
-
-  const localByUuid = useMemo(() => {
-    const map: Record<string, LocalInvoiceInfo> = {};
-    const pr = files.find((f) => f.role === "PRINCIPAL") ?? null;
-    const comps = files.filter((f) => f.role === "COMPLEMENTARIO");
-    const ordered = pr !== null ? [pr, ...comps] : comps;
-    for (const f of ordered) {
-      for (const r of rowsById[f.id] ?? []) {
-        if (!map[r.uuid]) {
-          map[r.uuid] = {
-            fileName: f.fileName,
-            sheetName: f.sheetName,
-            sourceRow: r.sourceRow,
-            values: r.values,
-          };
-        }
-      }
-    }
-    return map;
-  }, [files, rowsById]);
 
   const readyCount = files.filter(
     (f) => (rowsById[f.id] ?? []).length > 0 && Object.values(f.mapping).includes("UUID")
@@ -178,6 +109,46 @@ export default function DashboardPage() {
   const principalAllCols = useMemo(
     () => principalHeaders.filter((h) => principal !== null && principal.mapping[h] !== "UUID"),
     [principalHeaders, principal]
+  );
+
+  // Unión de campos de los complementarios (para el selector de fuente)
+  const sourceAllCols = useMemo(() => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const f of complementarios) {
+      const sheet = f.sheets.find((s) => s.name === f.sheetName);
+      if (!sheet) continue;
+      for (const h of getHeaders(sheet.rows, f.headerRow)) {
+        if (f.mapping[h] === "UUID") continue;
+        if (!seen.has(h)) {
+          seen.add(h);
+          out.push(h);
+        }
+      }
+    }
+    return out;
+  }, [complementarios]);
+
+  // Pre-marcado por defecto: campos ya mapeados en los complementarios
+  useEffect(() => {
+    setShowSource((prev) => {
+      const next = { ...prev };
+      for (const f of complementarios) {
+        const sheet = f.sheets.find((s) => s.name === f.sheetName);
+        if (!sheet) continue;
+        for (const h of getHeaders(sheet.rows, f.headerRow)) {
+          if (!(h in next)) {
+            next[h] = f.mapping[h] !== "NINGUNO" && f.mapping[h] !== "UUID";
+          }
+        }
+      }
+      return next;
+    });
+  }, [complementarios]);
+
+  const sourceColsChosen = useMemo(
+    () => sourceAllCols.filter((h) => showSource[h]),
+    [sourceAllCols, showSource]
   );
 
   const conceptHeaders = useMemo(
@@ -245,18 +216,6 @@ export default function DashboardPage() {
     }
     return { labelMap, keysMap, options };
   }, [groups]);
-
- const sourceFields = useMemo(() => {
-    const order = ["CONCEPTO", "FECHA", "FOLIO", "MONTO", "RETENCIONES"];
-    const present = new Set<string>();
-    for (const f of complementarios) {
-      for (const h of Object.keys(f.mapping)) {
-        const fld = f.mapping[h];
-        if (fld !== "NINGUNO" && fld !== "UUID") present.add(fld);
-      }
-    }
-    return order.filter((o) => present.has(o));
-  }, [complementarios]);
 
   const stats = useMemo(() => {
     if (!results) return null;
@@ -397,71 +356,12 @@ export default function DashboardPage() {
     }
   }
 
-  async function assignLote(groupKey: string, titulo: string, rows: ResultRow[]) {
-    const colabId = assignSel[groupKey];
-    if (!colabId) {
-      window.alert("Selecciona a la persona revisora");
-      return;
-    }
-    setAssigning(groupKey);
-    try {
-      const { data: batch, error } = await supabase
-        .from("batches")
-        .insert({ titulo, assigned_to: colabId, created_by: userId, status: "PENDIENTE" })
-        .select()
-        .single();
-      if (error || !batch) {
-        window.alert(error ? error.message : "No se pudo crear el lote");
-        return;
-      }
-      const batchId = (batch as { id: string }).id;
-      const items = rows.map((r) => ({ batch_id: batchId, uuid_fiscal: r.uuid }));
-      const { error: errItems } = await supabase.from("batch_items").insert(items);
-      if (errItems) {
-        window.alert(errItems.message);
-        return;
-      }
-      await addEvent(supabase, batchId, null, email, "ASIGNACION", "PENDIENTE", "Lote creado y asignado desde el panel");
-      const colab = colabs.find((c) => c.id === colabId);
-      setBatchedBy((prev) => {
-        const next = { ...prev };
-        next[groupKey] = colab ? colab.email : "revisor";
-        return next;
-      });
-      await refreshBatches();
-    } finally {
-      setAssigning("");
-    }
-  }
-
   async function generarReporteFinal() {
     if (!principal || !results || !histMap || !compIdx) return;
     setReportBusy(true);
     setReportMsg("");
     try {
       const principalRowsList = rowsById[principal.id] ?? [];
-      const uniqueUuids = Array.from(new Set(principalRowsList.map((r) => r.uuid)));
-      const notFound = uniqueUuids.filter((u) => !histMap.has(u) && !compIdx.has(u));
-
-      const loteByUuid: Record<string, { status: string; nota: string | null; titulo: string }> = {};
-      if (notFound.length > 0) {
-        const { data: items } = await supabase
-          .from("batch_items")
-          .select("uuid_fiscal, status, nota, batch_id")
-          .in("uuid_fiscal", notFound);
-        const batchIds = Array.from(new Set(((items ?? []) as { batch_id: string }[]).map((i) => i.batch_id)));
-        let tituloById: Record<string, string> = {};
-        if (batchIds.length > 0) {
-          const { data: bats } = await supabase.from("batches").select("id, titulo").in("id", batchIds);
-          for (const b of (bats ?? []) as { id: string; titulo: string }[]) tituloById[b.id] = b.titulo;
-        }
-        for (const it of (items ?? []) as { uuid_fiscal: string; status: string; nota: string | null; batch_id: string }[]) {
-          if (!loteByUuid[it.uuid_fiscal]) {
-            loteByUuid[it.uuid_fiscal] = { status: it.status, nota: it.nota, titulo: tituloById[it.batch_id] ?? "" };
-          }
-        }
-      }
-
       const seen = new Set<string>();
       const rowsOut: Record<string, string | number>[] = [];
       for (const r of principalRowsList) {
@@ -473,7 +373,6 @@ export default function DashboardPage() {
 
         const h = histMap.get(r.uuid);
         const hits = compIdx.get(r.uuid);
-        const lote = loteByUuid[r.uuid];
 
         if (h) {
           estatus = "Encontrada en histórico";
@@ -491,18 +390,6 @@ export default function DashboardPage() {
             "Ubicada en el archivo del mes: " + first.fileName + " (hoja " + first.sheetName + ", fila " + first.sourceRow + ")." +
             (first.detalle ? " Datos: " + first.detalle + "." : "") +
             (hits.length > 1 ? " También aparece en otros " + (hits.length - 1) + " archivo(s)." : "");
-        } else if (lote && lote.status === "SUBIDA_SISTEMA") {
-          estatus = "Atendida y subida al sistema";
-          ubicacion = lote.titulo;
-          observacion = "Acción del revisor: subida al sistema. " + (lote.nota ?? "");
-        } else if (lote && lote.status === "NO_CORRESPONDE") {
-          estatus = "Revisada: no corresponde";
-          ubicacion = lote.titulo;
-          observacion = "Acción del revisor: no corresponde. " + (lote.nota ?? "");
-        } else if (lote && lote.status === "PENDIENTE_TERCIERO") {
-          estatus = "Pendiente por tercero";
-          ubicacion = lote.titulo;
-          observacion = "En espera de información de un tercero. " + (lote.nota ?? "");
         } else {
           estatus = "No encontrada";
           ubicacion = "";
@@ -515,11 +402,10 @@ export default function DashboardPage() {
           Ubicacion: ubicacion,
           Observacion: observacion.trim(),
         };
-        const hitsSrc = compIdx ? compIdx.get(r.uuid) : undefined;
-        const firstSrc = hitsSrc && hitsSrc.length > 0 ? hitsSrc[0] : null;
-        for (const sf of sourceFields) {
-          const v = firstSrc && firstSrc.mappedValues ? firstSrc.mappedValues[sf] : null;
-          base["Fuente · " + sf] = v === null || v === undefined ? "" : v;
+        const hit = hits && hits.length > 0 ? hits[0] : null;
+        for (const sc of sourceColsChosen) {
+          const v = hit ? hit.values[sc] ?? null : null;
+          base["Fuente · " + sc] = v === null || v === undefined ? "" : v;
         }
         for (const c of principalVisibleCols) {
           const v = r.values[c];
@@ -551,17 +437,6 @@ export default function DashboardPage() {
         complementarios.map((f) => ({ file: f, rows: rowsById[f.id] ?? [] }))
       );
 
-      const notFound = uniqueUuids.filter((u) => !historical.has(u) && !compIndex.has(u));
-      const subidaSet = new Set<string>();
-      if (notFound.length > 0) {
-        const { data: items } = await supabase
-          .from("batch_items")
-          .select("uuid_fiscal")
-          .in("uuid_fiscal", notFound)
-          .eq("status", "SUBIDA_SISTEMA");
-        for (const it of (items ?? []) as { uuid_fiscal: string }[]) subidaSet.add(it.uuid_fiscal);
-      }
-
       const now = new Date();
       const seen = new Set<string>();
       const toInsert: Record<string, unknown>[] = [];
@@ -574,11 +449,24 @@ export default function DashboardPage() {
           alreadyHistorical += 1;
           continue;
         }
-        const inComp = compIndex.has(r.uuid);
-        const subida = subidaSet.has(r.uuid);
-        if (!inComp && !subida) {
+        const hits = compIndex.get(r.uuid);
+        if (!hits || hits.length === 0) {
           leftPending += 1;
           continue;
+        }
+        // Consolidado tipo JOIN: principal + todos los complementarios donde aparece
+        const datos: Record<string, unknown> = {
+          ...r.values,
+          __origen: principal.fileName,
+          __hoja: principal.sheetName,
+          __fila: r.sourceRow,
+          __via: "COMPLEMENTARIO",
+          __fuentes: hits.map((h) => h.fileName + " · " + h.sheetName + " · fila " + h.sourceRow),
+        };
+        for (const h of hits) {
+          for (const [k, v] of Object.entries(h.values)) {
+            datos["[" + h.fileName + "] " + k] = v;
+          }
         }
         toInsert.push({
           uuid_fiscal: r.uuid,
@@ -588,13 +476,7 @@ export default function DashboardPage() {
           mes_periodo: now.getMonth() + 1,
           anio_periodo: now.getFullYear(),
           origen_archivo: principal.fileName,
-          datos_json: {
-            ...r.values,
-            __origen: principal.fileName,
-            __hoja: principal.sheetName,
-            __fila: r.sourceRow,
-            __via: inComp ? "COMPLEMENTARIO" : "SUBIDA_SISTEMA",
-          },
+          datos_json: datos,
         });
       }
 
@@ -608,31 +490,8 @@ export default function DashboardPage() {
         }
       }
 
-      const consolidatedSet = new Set(toInsert.map((t) => String(t.uuid_fiscal)));
-      if (consolidatedSet.size > 0) {
-        const { data: allItems } = await supabase.from("batch_items").select("batch_id, uuid_fiscal");
-        const perBatch = new Map<string, number>();
-        for (const it of (allItems ?? []) as { batch_id: string; uuid_fiscal: string }[]) {
-          if (consolidatedSet.has(it.uuid_fiscal)) {
-            perBatch.set(it.batch_id, (perBatch.get(it.batch_id) ?? 0) + 1);
-          }
-        }
-        for (const [bid, count] of perBatch) {
-          await addEvent(
-            supabase,
-            bid,
-            null,
-            email,
-            "CONSOLIDACION",
-            null,
-            "Consolidar Mes: " + count + " factura(s) de este lote pasaron al histórico"
-          );
-        }
-      }
-
-      await refreshBatches();
       setConsolidateMsg(
-        "Consolidadas " + toInsert.length + " facturas con todos sus campos. " +
+        "Consolidadas " + toInsert.length + " facturas con todos sus campos (JOIN de archivos). " +
         "Ya estaban en histórico: " + alreadyHistorical + " (omitidas). " +
         "Quedan pendientes para el siguiente mes: " + leftPending + "."
       );
@@ -654,16 +513,13 @@ export default function DashboardPage() {
             <p className="text-[11px] text-gray-500">Panel del Contador Principal</p>
           </div>
           <div className="flex items-center gap-3">
-            {role !== "COLABORADOR_CONTADOR" ? (
-              <nav className="flex items-center gap-1 text-[12px] font-semibold">
-                <span className="rounded-lg bg-blue-50 text-blue-700 px-3 py-1.5">Panel</span>
-                <Link href="/reglas" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Reglas y UMA</Link>
-                <Link href="/mis-batches" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Mis lotes</Link>
-                {role === "SUPER_USUARIO" ? (
-                  <Link href="/admin" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Mantenimiento</Link>
-                ) : null}
-              </nav>
-            ) : null}
+            <nav className="flex items-center gap-1 text-[12px] font-semibold">
+              <span className="rounded-lg bg-blue-50 text-blue-700 px-3 py-1.5">Panel</span>
+              <Link href="/reglas" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Reglas y UMA</Link>
+              {role === "SUPER_USUARIO" ? (
+                <Link href="/admin" className="rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-100">Mantenimiento</Link>
+              ) : null}
+            </nav>
             <span className="text-sm text-gray-600 hidden sm:inline">{email}</span>
             <LogoutButton />
           </div>
@@ -874,28 +730,55 @@ export default function DashboardPage() {
                 className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors"
               >
                 <span className="text-[12px] font-bold text-gray-700">
-                  Columnas del reporte · {principalVisibleCols.length} visibles
+                  Columnas del reporte · {principalVisibleCols.length + sourceColsChosen.length} visibles
                 </span>
                 <span className="text-[11px] font-semibold text-gray-500">
                   {showCols ? "Colapsar ▲" : "Expandir ▼"}
                 </span>
               </button>
               {showCols ? (
-                <div className="p-4 grid sm:grid-cols-2 lg:grid-cols-3 gap-2 bg-white">
-                  {principalAllCols.map((h) => (
-                    <label
-                      key={h}
-                      className="flex items-center gap-2 text-[12px] font-semibold text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 cursor-pointer hover:border-blue-400"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={principal.visible[h] ?? false}
-                        onChange={(e) => handleVisibleChange(principal.id, h, e.target.checked)}
-                        className="accent-blue-700 w-3.5 h-3.5"
-                      />
-                      <span className="truncate">[{h}]</span>
-                    </label>
-                  ))}
+                <div className="p-4 space-y-4 bg-white">
+                  <div>
+                    <p className="text-[11px] font-bold tracking-wide text-gray-500 uppercase mb-2">Del archivo principal</p>
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                      {principalAllCols.map((h) => (
+                        <label
+                          key={h}
+                          className="flex items-center gap-2 text-[12px] font-semibold text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 cursor-pointer hover:border-blue-400"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={principal.visible[h] ?? false}
+                            onChange={(e) => handleVisibleChange(principal.id, h, e.target.checked)}
+                            className="accent-blue-700 w-3.5 h-3.5"
+                          />
+                          <span className="truncate">[{h}]</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-bold tracking-wide text-blue-700 uppercase mb-2">De los complementarios (fuente donde se encontró)</p>
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                      {sourceAllCols.map((h) => (
+                        <label
+                          key={h}
+                          className="flex items-center gap-2 text-[12px] font-semibold text-gray-700 bg-blue-50/50 border border-blue-200 rounded-lg px-3 py-2 cursor-pointer hover:border-blue-400"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={showSource[h] ?? false}
+                            onChange={(e) => setShowSource((p) => ({ ...p, [h]: e.target.checked }))}
+                            className="accent-blue-700 w-3.5 h-3.5"
+                          />
+                          <span className="truncate">[{h}]</span>
+                        </label>
+                      ))}
+                      {sourceAllCols.length === 0 ? (
+                        <p className="text-[12px] text-gray-500">Carga complementarios para ver sus campos.</p>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -909,14 +792,14 @@ export default function DashboardPage() {
               groupKeysMap={segmentInfo.keysMap}
               segmentOptions={segmentInfo.options}
               compIndex={compIdx}
-              sourceFields={sourceFields}
+              sourceCols={sourceColsChosen}
             />
           ) : null}
 
           {results ? (
             <div className="flex flex-wrap items-center justify-between gap-3 border border-gray-200 rounded-lg px-4 py-3 bg-gray-50">
               <p className="text-[12px] text-gray-600 max-w-xl">
-                <strong>Reporte final de facturas:</strong> un .xlsx con estatus, ubicación y una observación automática por factura (histórico, archivo del mes o acción del lote finalizado).
+                <strong>Reporte final de facturas:</strong> un .xlsx con estatus, ubicación, observación automática y las columnas de fuente elegidas.
               </p>
               <button
                 onClick={generarReporteFinal}
@@ -932,177 +815,13 @@ export default function DashboardPage() {
           ) : null}
         </div>
 
-        {groups ? (
-          <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
-            <div>
-              <h2 className="text-sm font-bold text-gray-900">Clasificación por reglas y asignación de lotes de trabajo</h2>
-              <p className="text-[12px] text-gray-500 mt-0.5">
-                UMA actual: {"$"}{uma.toFixed(2)} · Los lotes se crean únicamente con facturas NO encontradas. Puedes asignarte un lote a ti mismo para revisar una parte.
-              </p>
-            </div>
-            {groups.map((g) => {
-              const asignables = g.rows.filter((r) => r.status === "NO_ENCONTRADA");
-              return (
-                <div key={g.key} className="border border-gray-200 rounded-lg p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-[13px] font-bold text-gray-900">
-                        {g.rule ? g.rule.etiqueta : "Sin regla aplicada"}
-                        <span className="ml-2 text-[11px] font-bold text-gray-500 bg-gray-100 rounded-full px-2 py-0.5">
-                          {g.rows.length} facturas
-                        </span>
-                        <span className="ml-1 text-[11px] font-bold text-red-600 bg-red-50 rounded-full px-2 py-0.5">
-                          {asignables.length} no encontradas
-                        </span>
-                      </p>
-                      <p className="text-[12px] text-gray-500 mt-0.5">
-                        {g.rule ? ruleDescription(g.rule, uma) : "Facturas que no cumplieron ninguna regla."}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {batchedBy[g.key] ? (
-                        <span className="text-[11px] font-semibold bg-green-100 text-green-700 rounded-full px-3 py-1">
-                          Lote asignado a {batchedBy[g.key]}
-                        </span>
-                      ) : (
-                        <>
-                          <select
-                            value={assignSel[g.key] ?? ""}
-                            onChange={(e) => setAssignSel((p) => ({ ...p, [g.key]: e.target.value }))}
-                            disabled={asignables.length === 0 || colabs.length === 0}
-                            className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[12px] text-gray-900"
-                          >
-                            <option value="">Selecciona persona revisora…</option>
-                            {colabs.map((c) => (
-                              <option key={c.id} value={c.id}>{c.email}</option>
-                            ))}
-                          </select>
-                          <button
-                            onClick={() =>
-                              assignLote(
-                                g.key,
-                                (g.rule ? g.rule.etiqueta : "Sin regla") + " · " + asignables.length + " facturas",
-                                asignables
-                              )
-                            }
-                            disabled={asignables.length === 0 || !assignSel[g.key] || assigning === g.key}
-                            className="rounded-lg bg-blue-700 text-white text-[12px] font-semibold px-3.5 py-1.5 hover:bg-blue-800 disabled:opacity-50"
-                          >
-                            {assigning === g.key ? "Asignando…" : "Crear lote y asignar"}
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-            {colabs.length === 0 ? (
-              <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                No hay personas revisoras registradas. Créalas en la consola de usuarios del sistema y asígnales un rol.
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <button
-            onClick={() => setShowSeg(!showSeg)}
-            className="w-full flex items-center justify-between px-6 py-4 bg-white hover:bg-gray-50 transition-colors"
-          >
-            <span className="text-left">
-              <span className="text-sm font-bold text-gray-900">Seguimiento de lotes de trabajo</span>
-              <span className="block text-[12px] text-gray-500 mt-0.5">
-                Estatus, contadores por factura y bitácora de todos los lotes asignados.
-              </span>
-            </span>
-            <span className="text-[11px] font-semibold text-gray-500 shrink-0">
-              {showSeg ? "Colapsar ▲" : "Expandir ▼"}
-            </span>
-          </button>
-          {showSeg ? (
-            <div className="px-6 pb-6 space-y-4 border-t border-gray-100">
-              {(batchesAdmin ?? []).length === 0 ? (
-                <p className="text-[13px] text-gray-500">Aún no hay lotes creados.</p>
-              ) : (
-                (batchesAdmin ?? []).map((b) => {
-                  const counts: Record<string, number> = {};
-                  for (const it of b.items) counts[it.status] = (counts[it.status] ?? 0) + 1;
-                  return (
-                    <div key={b.id} className="border border-gray-200 rounded-lg p-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-[13px] font-bold text-gray-900">{b.titulo}</p>
-                        <div className="flex items-center gap-2">
-                          {loteBadge(b.status)}
-                          <button
-                            onClick={() => setShowLogAdmin((p) => ({ ...p, [b.id]: !p[b.id] }))}
-                            className="text-[11px] font-semibold text-gray-600 border border-gray-300 rounded-lg px-2.5 py-1 hover:bg-gray-100"
-                          >
-                            {showLogAdmin[b.id] ? "Ocultar bitácora ▲" : "Bitácora ▼"}
-                          </button>
-                        </div>
-                      </div>
-                      <p className="text-[12px] text-gray-500 mt-1">
-                        Asignado a <strong>{b.assigned_email}</strong> · {new Date(b.created_at).toLocaleString()}
-                      </p>
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        {ITEM_STATUSES.map((s) => (
-                          <span key={s.value} className="text-[11px] font-semibold bg-gray-100 text-gray-600 rounded-full px-2.5 py-1">
-                            {s.label}: {counts[s.value] ?? 0}
-                          </span>
-                        ))}
-                        <span className="text-[11px] font-semibold bg-gray-100 text-gray-600 rounded-full px-2.5 py-1">
-                          Total: {b.items.length}
-                        </span>
-                      </div>
-                      {b.nota_final ? (
-                        <p className="text-[12px] text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2 mt-2">
-                          <strong>Nota de finalización:</strong> {b.nota_final}
-                        </p>
-                      ) : null}
-                      {showLogAdmin[b.id] ? (
-                        <ul className="mt-3 space-y-1.5 text-[12px] text-gray-600 border-t border-gray-100 pt-3">
-                          {b.events.map((e) => {
-                            const itemUuid = e.item_id
-                              ? b.items.find((i) => i.id === e.item_id)?.uuid_fiscal ?? null
-                              : null;
-                            return (
-                              <li key={e.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                                <span className="text-gray-400 shrink-0">{new Date(e.created_at).toLocaleString()}</span>
-                                <span className="font-semibold text-gray-800 shrink-0">[{e.tipo}]</span>
-                                {e.status_nuevo ? <span className="text-blue-700 font-semibold shrink-0">→ {e.status_nuevo}</span> : null}
-                                {itemUuid ? (
-                                  <button
-                                    onClick={() => setModalUuid(itemUuid)}
-                                    className="font-mono text-blue-700 hover:underline shrink-0"
-                                  >
-                                    {itemUuid}
-                                  </button>
-                                ) : null}
-                                <span className="text-gray-500 shrink-0">{e.actor_email}</span>
-                                {e.detalle ? <span>· {e.detalle}</span> : null}
-                              </li>
-                            );
-                          })}
-                          {b.events.length === 0 ? <li className="text-gray-400">Sin eventos.</li> : null}
-                        </ul>
-                      ) : null}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          ) : null}
-        </div>
-
         <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-3">
           <h2 className="text-sm font-bold text-gray-900">Cierre mensual</h2>
           <p className="text-[12px] text-gray-600 leading-relaxed">
-            <strong>Consolidar Mes</strong> envía al histórico acumulado (con todos sus campos) únicamente:
-            (1) las facturas encontradas en archivos del mes, y
-            (2) las no encontradas que la persona revisora marcó como <strong>“Subida al sistema”</strong>.
-            Las que ya estaban en el histórico se omiten y las pendientes se quedan para el siguiente mes.
-            El cierre nunca duplica: cada UUID se consolida una sola vez. A cada lote tocado se le escribe un evento de CONSOLIDACIÓN en su bitácora.
+            <strong>Consolidar Mes</strong> envía al histórico acumulado las facturas encontradas en los archivos del mes,
+            con un <strong>consolidado tipo JOIN</strong>: cada UUID guarda sus campos del principal más todas las columnas de
+            cada complementario donde aparece (prefijadas por archivo) y la lista de fuentes. Las que ya estaban en el
+            histórico se omiten y las no encontradas quedan para el siguiente mes. Nunca se duplica: cada UUID se consolida una sola vez.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <button
@@ -1126,12 +845,6 @@ export default function DashboardPage() {
           ) : null}
         </div>
       </div>
-
-      <InvoiceModal
-        uuid={modalUuid}
-        localInfo={modalUuid ? localByUuid[modalUuid] ?? null : null}
-        onClose={() => setModalUuid(null)}
-      />
     </main>
   );
 }
