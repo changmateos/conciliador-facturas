@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import * as XLSX from "xlsx";
-import type { ResultRow } from "@/lib/conciliacion";
+import type { ComplementaryHit, ResultRow } from "@/lib/conciliacion";
 
 interface SegmentOption {
   key: string;
@@ -16,6 +16,8 @@ interface ResultsTableProps {
   segmentMap: Record<string, string[]>;
   groupKeysMap: Record<string, string[]>;
   segmentOptions: SegmentOption[];
+  compIndex: Map<string, ComplementaryHit[]> | null;
+  sourceFields: string[];
 }
 
 type Filter = "TODAS" | "HISTORICO" | "COMPLEMENTARIO" | "NO_ENCONTRADA" | "SENALADAS";
@@ -52,13 +54,14 @@ export default function ResultsTable({
   segmentMap,
   groupKeysMap,
   segmentOptions,
+  compIndex,
+  sourceFields,
 }: ResultsTableProps) {
   const [filter, setFilter] = useState<Filter>("TODAS");
   const [segment, setSegment] = useState("TODOS");
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(PAGE);
 
-  // Filtros cruzados: cada facet muestra conteos dentro del otro facet activo
   const byQuery = useMemo(() => {
     const q = query.trim().toUpperCase();
     if (q === "") return results;
@@ -99,12 +102,15 @@ export default function ResultsTable({
     return opts;
   }, [segList, segmentOptions, groupKeysMap]);
 
-  const filtered = useMemo(
-    () => applyStatus(tabList, filter),
-    [tabList, filter]
-  );
+  const filtered = useMemo(() => applyStatus(tabList, filter), [tabList, filter]);
 
   const shown = filtered.slice(0, limit);
+
+  function firstHit(r: ResultRow): ComplementaryHit | null {
+    if (!compIndex) return null;
+    const hits = compIndex.get(r.uuid);
+    return hits && hits.length > 0 ? hits[0] : null;
+  }
 
   function exportXlsx() {
     const rows = filtered.map((r) => {
@@ -112,7 +118,7 @@ export default function ResultsTable({
         UUID: r.uuid,
         Estatus:
           r.status === "HISTORICO"
-            ? "ENCONTRADA EN HISTORICO"
+            ? "ENCONTRADA EN HISTÓRICO"
             : r.status === "COMPLEMENTARIO"
               ? "ENCONTRADA EN COMPLEMENTARIO"
               : "NO ENCONTRADA",
@@ -123,6 +129,11 @@ export default function ResultsTable({
         TambienEn: r.extraLocations.join(" | "),
         FilaOrigen: r.sourceRow,
       };
+      const hit = firstHit(r);
+      for (const sf of sourceFields) {
+        const v = hit && hit.mappedValues ? hit.mappedValues[sf] : null;
+        base["Fuente · " + sf] = v === null || v === undefined ? "" : v;
+      }
       for (const c of visibleCols) {
         const v = r.values[c];
         base[c] = v === null || v === undefined ? "" : v;
@@ -199,6 +210,11 @@ export default function ResultsTable({
               <th className="px-3 py-2 text-left font-semibold text-gray-500">Segmentación</th>
               <th className="px-3 py-2 text-left font-semibold text-gray-500">Señalamientos</th>
               <th className="px-3 py-2 text-left font-semibold text-gray-500">Ubicación exacta</th>
+              {sourceFields.map((sf) => (
+                <th key={sf} className="px-3 py-2 text-left font-semibold text-blue-700 bg-blue-50/50">
+                  Fuente · {sf}
+                </th>
+              ))}
               {visibleCols.map((c) => (
                 <th key={c} className="px-3 py-2 text-left font-semibold text-gray-500">{c}</th>
               ))}
@@ -207,6 +223,7 @@ export default function ResultsTable({
           <tbody>
             {shown.map((r, i) => {
               const segs = segmentMap[segKey(r)] ?? [];
+              const hit = firstHit(r);
               return (
                 <tr key={r.uuid + "-" + r.sourceRow + "-" + i} className="border-t border-gray-100 hover:bg-gray-50/60">
                   <td className="px-3 py-2">
@@ -263,6 +280,14 @@ export default function ResultsTable({
                       {r.status === "NO_ENCONTRADA" ? "—" : r.location}
                     </span>
                   </td>
+                  {sourceFields.map((sf) => {
+                    const v = hit && hit.mappedValues ? hit.mappedValues[sf] : null;
+                    return (
+                      <td key={sf} className="px-3 py-2 text-gray-700 max-w-[220px] truncate bg-blue-50/30">
+                        {v === null || v === undefined ? "—" : String(v)}
+                      </td>
+                    );
+                  })}
                   {visibleCols.map((c) => (
                     <td key={c} className="px-3 py-2 text-gray-600 max-w-[200px] truncate">
                       {r.values[c] === null || r.values[c] === undefined ? "" : String(r.values[c])}
@@ -273,7 +298,7 @@ export default function ResultsTable({
             })}
             {shown.length === 0 ? (
               <tr>
-                <td colSpan={5 + visibleCols.length} className="px-3 py-6 text-center text-gray-400">
+                <td colSpan={5 + sourceFields.length + visibleCols.length} className="px-3 py-6 text-center text-gray-400">
                   Sin resultados para esta combinación de filtros.
                 </td>
               </tr>

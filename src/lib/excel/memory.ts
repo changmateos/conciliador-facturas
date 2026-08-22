@@ -6,7 +6,8 @@ import {
   getHeaders,
 } from "@/lib/excel/parser";
 
-const MEMORY_KEY = "conciliador-diccionario-v1";
+// v2: se ignora la memoria anterior para re-aplicar el default de hoja "NO SIF"
+const MEMORY_KEY = "conciliador-diccionario-v2";
 
 export interface StoredConfig {
   uuidMode: UuidMode;
@@ -46,25 +47,31 @@ export function rememberFile(fileName: string, file: ParsedFile): void {
   }
 }
 
-// Construye el borrador de un archivo cargado, reaplicando la memoria si existe
+// Hoja predeterminada: la primera que contenga "NO SIF"; si no, la de más filas.
+function defaultSheetOf(sheets: SheetData[]): SheetData {
+  let bestSheet = sheets[0];
+  for (const s of sheets) {
+    if (s.rows.length > bestSheet.rows.length) bestSheet = s;
+  }
+  const preferred = sheets.find((s) => s.name.toUpperCase().includes("NO SIF"));
+  return preferred ?? bestSheet;
+}
+
 export function buildFileDraft(
   fileName: string,
   role: FileRole,
   sheets: SheetData[],
   autoUuidMode: UuidMode
 ): ParsedFile {
-  let bestSheet = sheets[0];
-  for (const s of sheets) {
-    if (s.rows.length > bestSheet.rows.length) bestSheet = s;
-  }
+  const defaultSheet = defaultSheetOf(sheets);
 
   const stored = loadAllMemory()[fileName];
 
   const sheetName =
     stored && stored.sheetName && sheets.some((s) => s.name === stored.sheetName)
       ? stored.sheetName
-      : bestSheet.name;
-  const sheet = sheets.find((s) => s.name === sheetName) ?? bestSheet;
+      : defaultSheet.name;
+  const sheet = sheets.find((s) => s.name === sheetName) ?? defaultSheet;
 
   const maxRow = Math.max(0, Math.min(14, sheet.rows.length - 1));
   const headerRow =

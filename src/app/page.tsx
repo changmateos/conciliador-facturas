@@ -246,6 +246,18 @@ export default function DashboardPage() {
     return { labelMap, keysMap, options };
   }, [groups]);
 
+ const sourceFields = useMemo(() => {
+    const order = ["CONCEPTO", "FECHA", "FOLIO", "MONTO", "RETENCIONES"];
+    const present = new Set<string>();
+    for (const f of complementarios) {
+      for (const h of Object.keys(f.mapping)) {
+        const fld = f.mapping[h];
+        if (fld !== "NINGUNO" && fld !== "UUID") present.add(fld);
+      }
+    }
+    return order.filter((o) => present.has(o));
+  }, [complementarios]);
+
   const stats = useMemo(() => {
     if (!results) return null;
     const encontradas = results.filter((r) => r.status !== "NO_ENCONTRADA").length;
@@ -503,6 +515,12 @@ export default function DashboardPage() {
           Ubicacion: ubicacion,
           Observacion: observacion.trim(),
         };
+        const hitsSrc = compIdx ? compIdx.get(r.uuid) : undefined;
+        const firstSrc = hitsSrc && hitsSrc.length > 0 ? hitsSrc[0] : null;
+        for (const sf of sourceFields) {
+          const v = firstSrc && firstSrc.mappedValues ? firstSrc.mappedValues[sf] : null;
+          base["Fuente · " + sf] = v === null || v === undefined ? "" : v;
+        }
         for (const c of principalVisibleCols) {
           const v = r.values[c];
           base[c] = v === null || v === undefined ? "" : v;
@@ -890,6 +908,8 @@ export default function DashboardPage() {
               segmentMap={segmentInfo.labelMap}
               groupKeysMap={segmentInfo.keysMap}
               segmentOptions={segmentInfo.options}
+              compIndex={compIdx}
+              sourceFields={sourceFields}
             />
           ) : null}
 

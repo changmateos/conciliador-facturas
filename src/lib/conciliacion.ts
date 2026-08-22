@@ -24,14 +24,13 @@ export interface ComplementaryHit {
   sheetName: string;
   sourceRow: number;
   detalle: string;
+  // valores del complementario por campo semántico mapeado (CONCEPTO, FECHA, ...)
+  mappedValues: Record<string, string | number | null>;
 }
 
 const DETALLE_KEYS = /fecha|concepto|folio|raz[oó]n|rfc/i;
 
-function buildDetalle(
-  uuid: string,
-  values: Record<string, string | number | null>
-): string {
+function buildDetalle(values: Record<string, string | number | null>): string {
   const parts: string[] = [];
   for (const [k, v] of Object.entries(values)) {
     if (k.toLowerCase().includes("uuid")) continue;
@@ -39,7 +38,6 @@ function buildDetalle(
     if (DETALLE_KEYS.test(k)) parts.push(k + ": " + String(v));
     if (parts.length >= 3) break;
   }
-  void uuid;
   return parts.join(" · ");
 }
 
@@ -49,11 +47,17 @@ export function buildComplementIndex(
   const index = new Map<string, ComplementaryHit[]>();
   for (const { file, rows } of comps) {
     for (const r of rows) {
+      const mappedValues: Record<string, string | number | null> = {};
+      for (const [header, field] of Object.entries(file.mapping)) {
+        if (field === "NINGUNO" || field === "UUID") continue;
+        mappedValues[field] = r.values[header] ?? null;
+      }
       const hit: ComplementaryHit = {
         fileName: file.fileName,
         sheetName: file.sheetName,
         sourceRow: r.sourceRow,
-        detalle: buildDetalle(r.uuid, r.values),
+        detalle: buildDetalle(r.values),
+        mappedValues,
       };
       const list = index.get(r.uuid);
       if (list) list.push(hit);
@@ -63,7 +67,6 @@ export function buildComplementIndex(
   return index;
 }
 
-// Devuelve periodo y origen de cada UUID que ya vive en el histórico
 export async function fetchHistoricalMap(
   supabase: SupabaseClient,
   uuids: string[]
